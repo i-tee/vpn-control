@@ -19,6 +19,9 @@ use App\Orchid\Screens\User\UserListScreen;
 use App\Orchid\Screens\User\UserProfileScreen;
 use Illuminate\Support\Facades\Route;
 use Tabuna\Breadcrumbs\Trail;
+// Управление клиентами
+use App\Orchid\Screens\ClientScreen;
+use App\Orchid\Screens\CreateClientScreen;
 
 /*
 |--------------------------------------------------------------------------
@@ -102,3 +105,7 @@ Route::screen('/examples/charts', ExampleChartsScreen::class)->name('platform.ex
 Route::screen('/examples/cards', ExampleCardsScreen::class)->name('platform.example.cards');
 
 // Route::screen('idea', Idea::class, 'platform.screens.idea');
+
+Route::screen('clients', ClientScreen::class)->name('platform.clients');
+Route::screen('clients/create', CreateClientScreen::class)->name('platform.client.create');
+Route::screen('clients/{client}', ClientScreen::class)->name('platform.client.edit');
