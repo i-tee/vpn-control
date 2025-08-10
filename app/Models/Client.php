@@ -4,11 +4,12 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Orchid\Filters\Filterable;
+use Orchid\Screen\AsSource;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Client extends Model
 {
-    use Filterable;
+    use AsSource, Filterable; // Используем трейт AsSource
     
     // Список полей, которые можно фильтровать
     protected $allowedFilters = [
