@@ -9,24 +9,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Client extends Model
 {
-    use AsSource, Filterable; // Используем трейт AsSource
+    use AsSource, Filterable;
     
-    // Список полей, которые можно фильтровать
-    protected $allowedFilters = [
-        'id',
-        'name',
-        'server_name',
-        'telegram_nickname'
-    ];
-    
-    // Список полей, которые можно сортировать
-    protected $allowedSorts = [
-        'id',
-        'name',
-        'created_at',
-        'updated_at'
-    ];
-
     protected $fillable = [
         'name',
         'password',

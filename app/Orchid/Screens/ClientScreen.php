@@ -6,7 +6,6 @@ use App\Models\Client;
 use Orchid\Screen\Screen;
 use Orchid\Support\Facades\Layout;
 use Orchid\Screen\TD;
-use Orchid\Screen\Actions\Link;
 use Orchid\Screen\Actions\Button;
 use Orchid\Screen\Actions\ModalToggle;
 use Orchid\Support\Facades\Toast;
@@ -17,48 +16,33 @@ use Illuminate\Http\Request;
 
 class ClientScreen extends Screen
 {
-    /**
-     * Fetch data to be displayed on the screen.
-     */
     public function query(): array
     {
         return [
-            'clients' => Client::orderBy('id', 'desc')->paginate()
+            'clients' => Client::latest()->paginate()
         ];
     }
 
-    /**
-     * The name of the screen displayed in the header.
-     */
     public function name(): ?string
     {
-        return 'Управление клиентами';
+        return 'Клиенты';
     }
 
-    /**
-     * Display header description.
-     */
     public function description(): ?string
     {
-        return 'Создавайте и управляйте клиентами системы';
+        return 'Управление клиентами системы';
     }
 
-    /**
-     * The screen's action buttons.
-     */
     public function commandBar(): array
     {
         return [
             ModalToggle::make('Добавить клиента')
-                ->modal('createClientModal')
-                ->method('createClient')
+                ->modal('clientModal')
+                ->method('save')
                 ->icon('plus')
         ];
     }
 
-    /**
-     * The screen's layout elements.
-     */
     public function layout(): array
     {
         return [
@@ -71,115 +55,78 @@ class ClientScreen extends Screen
                     ->render(function ($client) {
                         return $client->created_at->toDateTimeString();
                     }),
-                TD::make(__('Actions'))
-                    ->align(TD::ALIGN_RIGHT)
-                    ->render(
-                        fn(Client $client) =>
-                        ModalToggle::make('Редактировать')
-                            ->modal('editClientModal')
-                            ->method('editClient')
-                            ->parameters(['client_id' => $client->id])
-                            ->type(Color::LINK())
+                TD::make('Действия')
+                    ->render(function (Client $client) {
+                        return ModalToggle::make('')
+                            ->modal('clientModal')
+                            ->method('save')
+                            ->asyncParameters(['client' => $client->id])
                             ->icon('pencil')
-                    )
+                            ->class('btn btn-primary mr-2')
+                            .
+                            Button::make('')
+                                ->icon('trash')
+                                ->method('delete', ['id' => $client->id])
+                                ->confirm('Удалить клиента?')
+                                ->class('btn btn-danger');
+                    })
             ]),
-            
-            // Модальное окно для создания
-            Layout::modal('createClientModal', Layout::rows([
-                Input::make('name')
-                    ->title('Имя')
-                    ->required(),
-                Input::make('password')
-                    ->title('Пароль')
-                    ->type('text')
-                    ->required()
-                    ->help('Хранится в открытом виде'),
-                Select::make('user_id')
-                    ->fromModel(\App\Models\User::class, 'name', 'id')
-                    ->title('Пользователь системы')
-                    ->empty('Не выбран'),
-                Input::make('server_name')
-                    ->title('Название сервера'),
-                Input::make('owner_id')
-                    ->title('ID владельца'),
-                Input::make('telegram_nickname')
-                    ->title('Telegram ник')
-            ]))->title('Создать клиента')
-              ->applyButton('Сохранить'),
 
-            // Модальное окно для редактирования (асинхронное, с предзаполнением)
-            Layout::modal('editClientModal', Layout::rows([
-                Input::make('client_id')
-                    ->type('hidden'),
-                Input::make('name')
-                    ->title('Имя')
-                    ->required(),
-                Input::make('password')
-                    ->title('Пароль')
-                    ->type('text')
-                    ->required()
-                    ->help('Хранится в открытом виде'),
-                Select::make('user_id')
+            Layout::modal('clientModal', Layout::rows([
+                Input::make('client.id')->type('hidden'),
+                Input::make('client.name')->title('Имя')->required(),
+                Input::make('client.password')->title('Пароль')->required(),
+                Select::make('client.user_id')
                     ->fromModel(\App\Models\User::class, 'name', 'id')
-                    ->title('Пользователь системы')
+                    ->title('Пользователь')
                     ->empty('Не выбран'),
-                Input::make('server_name')
-                    ->title('Название сервера'),
-                Input::make('owner_id')
-                    ->title('ID владельца'),
-                Input::make('telegram_nickname')
-                    ->title('Telegram ник')
-            ]))->title('Редактировать клиента')
-              ->applyButton('Сохранить')
-              ->async('asyncLoadClient') // Асинхронная загрузка данных
+                Input::make('client.server_name')->title('Сервер'),
+                Input::make('client.owner_id')->title('ID владельца'),
+                Input::make('client.telegram_nickname')->title('Telegram')
+            ]))
+            ->title('Форма клиента')
+            ->applyButton('Сохранить')
+            ->closeButton('Отмена')
+            ->async('asyncGetClient')
         ];
     }
 
-    /**
-     * Асинхронная загрузка данных для модального редактирования
-     */
-    public function asyncLoadClient(int $client_id): array
+    public function asyncGetClient(Client $client): array
     {
-        $client = Client::findOrFail($client_id);
         return [
-            'client_id' => $client->id,
-            'name' => $client->name,
-            'password' => $client->password,
-            'user_id' => $client->user_id,
-            'server_name' => $client->server_name,
-            'owner_id' => $client->owner_id,
-            'telegram_nickname' => $client->telegram_nickname
+            'client' => $client
         ];
     }
 
-    /**
-     * Создание клиента из модального
-     */
-    public function createClient(Request $request)
+    public function save(Request $request)
     {
         $request->validate([
-            'name' => 'required|string',
-            'password' => 'required|string',
-            // Добавь другие
+            'client.name' => 'required|string|max:255',
+            'client.password' => 'required|string'
         ]);
 
-        Client::create($request->all());
-        Toast::info('Клиент создан');
+        $data = $request->input('client');
+
+        try {
+            if (empty($data['id'])) {
+                Client::create($data);
+                Toast::success('Клиент создан');
+            } else {
+                Client::findOrFail($data['id'])->update($data);
+                Toast::success('Клиент обновлён');
+            }
+        } catch (\Exception $e) {
+            Toast::error('Ошибка: ' . $e->getMessage());
+        }
     }
 
-    /**
-     * Редактирование клиента из модального
-     */
-    public function editClient(Request $request)
+    public function delete(Request $request)
     {
-        $request->validate([
-            'name' => 'required|string',
-            'password' => 'required|string',
-            // Добавь другие
-        ]);
-
-        $client = Client::findOrFail($request->input('client_id'));
-        $client->update($request->all());
-        Toast::info('Клиент обновлен');
+        try {
+            Client::findOrFail($request->input('id'))->delete();
+            Toast::success('Клиент удалён');
+        } catch (\Exception $e) {
+            Toast::error('Ошибка: ' . $e->getMessage());
+        }
     }
 }
