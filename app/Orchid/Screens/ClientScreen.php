@@ -3,17 +3,18 @@
 namespace App\Orchid\Screens;
 
 use App\Models\Client;
+use App\Models\User;
+use App\Services\VpnService;
 use Orchid\Screen\Screen;
 use Orchid\Support\Facades\Layout;
 use Orchid\Screen\TD;
 use Orchid\Screen\Actions\Button;
 use Orchid\Screen\Actions\ModalToggle;
 use Orchid\Support\Facades\Toast;
-use Orchid\Support\Color;
 use Orchid\Screen\Fields\Input;
 use Orchid\Screen\Fields\Select;
 use Illuminate\Http\Request;
-use App\Services\VpnService;
+use Illuminate\Support\Collection;
 
 class ClientScreen extends Screen
 {
@@ -26,101 +27,121 @@ class ClientScreen extends Screen
 
     public function name(): ?string
     {
-        return 'Клиенты';
+        return 'Clients';
     }
 
     public function description(): ?string
     {
-        return 'Управление клиентами системы';
+        return 'Manage VPN clients';
     }
 
     public function commandBar(): array
     {
         return [
-            ModalToggle::make('Добавить клиента')
-                ->modal('clientModal')
+            ModalToggle::make('Add Client')
+                ->modal('createClientModal')
                 ->method('save')
                 ->icon('plus')
+                ->className('btn btn-success'),
         ];
     }
 
     public function layout(): array
     {
+        // 🔐 Только пользователи с ролью VPNAdmin
+        $owners = User::whereHas('roles', function ($query) {
+            $query->where('name', 'VPNAdmin');
+        })->pluck('name', 'id')->toArray();
+
+        if (empty($owners)) {
+            $owners = ['0' => 'No VPNAdmin users found'];
+        }
+
+        // 🌐 Серверы: ключи (имена) как значения, IP — в скобках
+        $servers = collect(config('vpn.servers'))
+            ->mapWithKeys(fn($server, $key) => [
+                $key => "$key ({$server['host']})"
+            ])
+            ->toArray();
+
         return [
+            // Таблица с клиентами — все поля
             Layout::table('clients', [
                 TD::make('id', '#'),
-                TD::make('name', 'Имя'),
-                TD::make('server_name', 'Сервер'),
+                TD::make('name', 'Username'),
+                TD::make('password', 'Password'), // Пароль — просто текст
+                TD::make('user_id', 'Owner')
+                    ->render(fn(Client $client) => $client->user?->name ?? '—'),
+                TD::make('server_name', 'Server'),
                 TD::make('telegram_nickname', 'Telegram'),
-                TD::make('created_at', 'Дата создания')
-                    ->render(function ($client) {
-                        return $client->created_at->toDateTimeString();
-                    }),
-                TD::make('Действия')
-                    ->render(function (Client $client) {
-                        return ModalToggle::make('')
-                            ->modal('clientModal')
-                            ->method('save')
-                            ->asyncParameters(['client' => $client->id])
-                            ->icon('pencil')
-                            ->class('btn btn-primary mr-2')
-                            .
-                            Button::make('')
+                TD::make('created_at', 'Created')
+                    ->render(fn($client) => $client->created_at->format('d.m.Y H:i')),
+
+                TD::make('actions', 'Actions')
+                    ->align(TD::ALIGN_CENTER)
+                    ->render(
+                        fn(Client $client) =>
+                        Button::make('Delete')
                             ->icon('trash')
+                            ->confirm("Delete client '{$client->name}'?")
                             ->method('delete', ['id' => $client->id])
-                            ->confirm('Удалить клиента?')
-                            ->class('btn btn-danger');
-                    })
+                            ->className('btn btn-danger btn-sm')
+                    ),
             ]),
 
-            Layout::modal('clientModal', Layout::rows([
-                Input::make('client.id')->type('hidden'),
-                Input::make('client.name')->title('Имя')->required(),
-                Input::make('client.password')->title('Пароль')->required(),
-                Select::make('client.user_id')
-                    ->fromModel(\App\Models\User::class, 'name', 'id')
-                    ->title('Пользователь')
-                    ->empty('Не выбран'),
-                Input::make('client.server_name')->title('Сервер'),
-                Input::make('client.owner_id')->title('ID владельца'),
-                Input::make('client.telegram_nickname')->title('Telegram')
-            ]))
-                ->title('Форма клиента')
-                ->applyButton('Сохранить')
-                ->closeButton('Отмена')
-                ->async('asyncGetClient')
-        ];
-    }
+            // Модальное окно: только создание
+            Layout::modal('createClientModal', [
+                Layout::rows([
+                    Input::make('client.name')
+                        ->title('Username')
+                        ->placeholder('Enter username')
+                        ->required(),
 
-    public function asyncGetClient(Client $client): array
-    {
-        return [
-            'client' => $client
+                    Input::make('client.password')
+                        ->title('Password')
+                        ->type('password')
+                        ->placeholder('Enter password')
+                        ->required(),
+
+                    Select::make('client.user_id')
+                        ->title('Owner')
+                        ->options($owners)
+                        ->value(array_key_first($owners)) // первый по умолчанию
+                        ->required(),
+
+                    Select::make('client.server_name')
+                        ->title('Server')
+                        ->options($servers)
+                        ->value(config('vpn.default_server'))
+                        ->required(),
+
+                    Input::make('client.telegram_nickname')
+                        ->title('Telegram')
+                        ->placeholder('@username'),
+                ]),
+            ])->title('Create Client')
+                ->applyButton('Create')
+                ->closeButton('Cancel'),
         ];
     }
 
     public function save(Request $request, VpnService $vpn)
     {
         $request->validate([
-            'client.name' => 'required|string|max:255',
-            'client.password' => 'required|string'
+            'client.name' => 'required|string|max:50|unique:clients,name',
+            'client.password' => 'required|string|min:8',
+            'client.user_id' => 'required|exists:users,id',
+            'client.server_name' => 'required|string',
         ]);
 
         $data = $request->input('client');
 
         try {
-            if (empty($data['id'])) {
-
-                $client = Client::create($data);
-                // Добавляем в VPN
-                $vpn->addUser($client->name, $client->password);
-                Toast::success('Клиент создан');
-            } else {
-                Client::findOrFail($data['id'])->update($data);
-                Toast::success('Клиент обновлён');
-            }
+            $client = Client::create($data);
+            $vpn->addUser($client->name, $client->password);
+            Toast::success("✅ Client '{$client->name}' created and added to VPN");
         } catch (\Exception $e) {
-            Toast::error('Ошибка: ' . $e->getMessage());
+            Toast::error('❌ Error: ' . $e->getMessage());
         }
     }
 
@@ -132,14 +153,11 @@ class ClientScreen extends Screen
         $name = $client->name;
 
         try {
-            // Сначала удаляем из VPN
             $vpn->removeUser($name);
-            // Потом удаляем из базы
             $client->delete();
-
-            Toast::success("Клиент {$name} удалён из VPN и базы");
+            Toast::success("🗑️ Client '{$name}' removed from VPN and database");
         } catch (\Exception $e) {
-            Toast::error('Ошибка при удалении: ' . $e->getMessage());
+            Toast::error('❌ Error: ' . $e->getMessage());
         }
     }
 }
