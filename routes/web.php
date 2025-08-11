@@ -6,6 +6,10 @@ Route::get('/', function () {
     return view('welcome');
 });
 
+
+
+/*
+
 use App\Http\Controllers\VpnTestController;
 
 // Тестовые маршруты
@@ -31,3 +35,5 @@ Route::prefix('vpn-test')->group(function () {
     // Удалить пользователя
     Route::post('/remove', [VpnTestController::class, 'removeUser'])->name('vpn.remove');
 });
+
+*/

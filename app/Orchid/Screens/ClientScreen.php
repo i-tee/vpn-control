@@ -13,6 +13,7 @@ use Orchid\Support\Color;
 use Orchid\Screen\Fields\Input;
 use Orchid\Screen\Fields\Select;
 use Illuminate\Http\Request;
+use App\Services\VpnService;
 
 class ClientScreen extends Screen
 {
@@ -65,10 +66,10 @@ class ClientScreen extends Screen
                             ->class('btn btn-primary mr-2')
                             .
                             Button::make('')
-                                ->icon('trash')
-                                ->method('delete', ['id' => $client->id])
-                                ->confirm('Удалить клиента?')
-                                ->class('btn btn-danger');
+                            ->icon('trash')
+                            ->method('delete', ['id' => $client->id])
+                            ->confirm('Удалить клиента?')
+                            ->class('btn btn-danger');
                     })
             ]),
 
@@ -84,10 +85,10 @@ class ClientScreen extends Screen
                 Input::make('client.owner_id')->title('ID владельца'),
                 Input::make('client.telegram_nickname')->title('Telegram')
             ]))
-            ->title('Форма клиента')
-            ->applyButton('Сохранить')
-            ->closeButton('Отмена')
-            ->async('asyncGetClient')
+                ->title('Форма клиента')
+                ->applyButton('Сохранить')
+                ->closeButton('Отмена')
+                ->async('asyncGetClient')
         ];
     }
 
@@ -98,7 +99,7 @@ class ClientScreen extends Screen
         ];
     }
 
-    public function save(Request $request)
+    public function save(Request $request, VpnService $vpn)
     {
         $request->validate([
             'client.name' => 'required|string|max:255',
@@ -109,7 +110,10 @@ class ClientScreen extends Screen
 
         try {
             if (empty($data['id'])) {
-                Client::create($data);
+
+                $client = Client::create($data);
+                // Добавляем в VPN
+                $vpn->addUser($client->name, $client->password);
                 Toast::success('Клиент создан');
             } else {
                 Client::findOrFail($data['id'])->update($data);
@@ -120,13 +124,22 @@ class ClientScreen extends Screen
         }
     }
 
-    public function delete(Request $request)
+    public function delete(Request $request, VpnService $vpn)
     {
+        $request->validate(['id' => 'required|exists:clients,id']);
+
+        $client = Client::findOrFail($request->input('id'));
+        $name = $client->name;
+
         try {
-            Client::findOrFail($request->input('id'))->delete();
-            Toast::success('Клиент удалён');
+            // Сначала удаляем из VPN
+            $vpn->removeUser($name);
+            // Потом удаляем из базы
+            $client->delete();
+
+            Toast::success("Клиент {$name} удалён из VPN и базы");
         } catch (\Exception $e) {
-            Toast::error('Ошибка: ' . $e->getMessage());
+            Toast::error('Ошибка при удалении: ' . $e->getMessage());
         }
     }
 }
