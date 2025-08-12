@@ -105,4 +105,8 @@ Route::screen('/examples/cards', ExampleCardsScreen::class)->name('platform.exam
 
 // Route::screen('idea', Idea::class, 'platform.screens.idea');
 
-Route::screen('clients', ClientScreen::class)->name('platform.clients');
+Route::screen('clients', ClientScreen::class)
+    ->name('platform.clients')
+    ->breadcrumbs(fn (Trail $trail) => $trail
+        ->parent('platform.index')
+        ->push('VPN Clients'));

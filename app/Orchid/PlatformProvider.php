@@ -35,7 +35,7 @@ class PlatformProvider extends OrchidServiceProvider
     {
         return [
 
-            Menu::make('Accounts')
+            Menu::make('VPN Clients')
                 ->icon('bs.people')
                 ->title('VPN')
                 //->badge(fn() => \App\Models\Client::class::count())
@@ -85,11 +85,11 @@ class PlatformProvider extends OrchidServiceProvider
                 ->permission('platform.systems.roles')
                 ->divider(),
 
-            // Menu::make('Documentation')
-            //     ->title('Docs')
-            //     ->icon('bs.box-arrow-up-right')
-            //     ->url('https://orchid.software/en/docs')
-            //     ->target('_blank'),
+            Menu::make('Instructions')
+                ->title('Docs')
+                ->icon('bs.box-arrow-up-right')
+                ->url('/help')
+                ->target('_blank'),
 
             // Menu::make('Changelog')
             //     ->icon('bs.box-arrow-up-right')

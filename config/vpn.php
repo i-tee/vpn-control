@@ -2,7 +2,7 @@
 
 return [
     'servers' => [
-        'main' => [ // Имя сервера (может быть любым)
+        'vpn.xab.su' => [ // Имя сервера (может быть любым)
             'host' => '92.51.21.25',
             'port' => 5000,
             'secret_key' => 'azlk2140',
@@ -17,5 +17,5 @@ return [
         //     'status' => 'active', // Статус сервера (может быть 'active', 'inactive', 'maintenance' и т.д.)
         // ],
     ],
-    'default_server' => 'main', // Сервер по умолчанию
+    'default_server' => 'vpn.xab.su', // Сервер по умолчанию
 ];

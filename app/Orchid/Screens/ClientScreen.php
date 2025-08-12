@@ -32,7 +32,7 @@ class ClientScreen extends Screen
 
     public function description(): ?string
     {
-        return 'Manage VPN clients';
+        return 'Manage clients on remote VPN servers';
     }
 
     public function commandBar(): array
@@ -48,13 +48,13 @@ class ClientScreen extends Screen
 
     public function layout(): array
     {
-        // 🔐 Только пользователи с ролью VPNAdmin
+        // 🔐 Только пользователи с ролью consumer
         $owners = User::whereHas('roles', function ($query) {
-            $query->where('name', 'VPNAdmin');
+            $query->where('name', 'consumer');
         })->pluck('name', 'id')->toArray();
 
         if (empty($owners)) {
-            $owners = ['0' => 'No VPNAdmin users found'];
+            $owners = ['0' => 'No consumer users found'];
         }
 
         // 🌐 Серверы: ключи (имена) как значения, IP — в скобках
