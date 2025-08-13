@@ -4,19 +4,25 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Orchid\Filters\Filterable;
+use Orchid\Screen\AsSource;
 
 class Transaction extends Model
 {
-    use HasFactory, Filterable;
+    use HasFactory, AsSource;
 
     protected $fillable = [
-        'user_id', 'type', 'amount', 'subject_type', 'subject_id', 'comment', 'is_active',
+        'user_id',
+        'type',
+        'amount',
+        'subject_type',
+        'subject_id',
+        'comment',
+        'is_active',
     ];
 
-    protected $allowedFilters = [
-        'user_id',
-        'created_at',
+    protected $casts = [
+        'is_active' => 'boolean',
+        'amount' => 'float',
     ];
 
     protected $allowedSorts = [
@@ -66,7 +72,7 @@ class Transaction extends Model
             'comment' => $comment,
             'is_active' => $isActive,
         ], fn($value) => !is_null($value));
-
+        
         return $this->update($data);
     }
 
@@ -75,7 +81,7 @@ class Transaction extends Model
         if (!$this->is_active) {
             return false;
         }
-
+        
         return $this->update([
             'is_active' => false,
             'comment' => $this->comment ? $this->comment . ' | ' . $comment : $comment,

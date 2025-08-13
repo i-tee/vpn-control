@@ -3,8 +3,6 @@
 namespace App\Orchid\Screens\Transaction;
 
 use App\Models\Transaction;
-use App\Models\User;
-use Illuminate\Http\Request;
 use Orchid\Screen\Actions\Link;
 use Orchid\Screen\Screen;
 use Orchid\Support\Facades\Layout;
@@ -16,15 +14,18 @@ class TransactionListScreen extends Screen
 {
     public function query(): iterable
     {
-        $query = Transaction::query();
-        // Фильтрация по ID пользователя, если передано
-        if (request()->has('user_id')) {
+        $query = Transaction::query()->with('user');
+        
+        // Фильтрация по ID пользователя
+        if (request()->filled('user_id')) {
             $query->where('user_id', request('user_id'));
         }
-        // Фильтрация по дате, если передано
-        if (request()->has('created_at')) {
+        
+        // Фильтрация по дате
+        if (request()->filled('created_at')) {
             $query->whereDate('created_at', request('created_at'));
         }
+        
         return [
             'transactions' => $query->orderBy('created_at', 'desc')->paginate(20),
         ];
@@ -37,7 +38,7 @@ class TransactionListScreen extends Screen
 
     public function description(): ?string
     {
-        return 'List of all transactions in the VPN system';
+        return 'List of all transactions in the system';
     }
 
     public function commandBar(): iterable
@@ -55,41 +56,31 @@ class TransactionListScreen extends Screen
             Layout::table('transactions', [
                 TD::make('id', 'ID')
                     ->sort()
-                    ->render(function (Transaction $transaction) {
-                        return $transaction->id; // Явно возвращаем ID как значение
-                    }),
-                TD::make('user_id', 'User')
+                    ->render(fn ($transaction) => 
+                        \Orchid\Screen\Actions\Link::make($transaction->id)
+                            ->route('platform.transactions.edit', $transaction->id)
+                    ),
+                
+                TD::make('user.name', 'User')
                     ->sort()
-                    ->render(function (Transaction $transaction) {
-                        return $transaction->user->name ?? 'N/A'; // Проверяем связь
-                    }),
+                    ->render(fn ($transaction) => $transaction->user?->name ?? 'N/A'),
+                
+                TD::make('type', 'Type')
+                    ->sort(),
+                
+                TD::make('amount', 'Amount')
+                    ->sort()
+                    ->render(fn ($transaction) => number_format($transaction->amount, 2)),
+                
                 TD::make('created_at', 'Date')
                     ->sort()
                     ->filter(TD::FILTER_DATE_RANGE)
-                    ->render(function (Transaction $transaction) {
-                        return $transaction->created_at; // Явно возвращаем дату
-                    }),
-                TD::make('Actions')
-                    ->align(TD::ALIGN_CENTER)
-                    ->render(function (Transaction $transaction) {
-                        return Button::make('Edit')
-                            ->icon('pencil')
-                            ->route('platform.transactions.edit', $transaction) .
-                            Button::make('Cancel')
-                            ->icon('ban')
-                            ->method('cancel')
-                            ->parameters(['id' => $transaction->id])
-                            ->canSee($transaction->is_active);
-                    }),
+                    ->render(fn ($transaction) => $transaction->created_at->format('Y-m-d H:i')),
+                
+                TD::make('is_active', 'Status')
+                    ->sort()
+                    ->render(fn ($transaction) => $transaction->is_active ? 'Active' : 'Cancelled'),
             ]),
         ];
-    }
-
-    public function cancel(Request $request)
-    {
-        // Поиск и отмена транзакции
-        $transaction = Transaction::findOrFail($request->get('id'));
-        $transaction->cancel('Cancel from admin panel');
-        Toast::success('Transaction canceled');
     }
 }

@@ -111,20 +111,20 @@ Route::screen('clients', ClientScreen::class)
         ->parent('platform.index')
         ->push('VPN Clients'));
 
+
+
 use App\Orchid\Screens\Transaction\TransactionListScreen;
+use App\Orchid\Screens\Transaction\TransactionCreateScreen;
 use App\Orchid\Screens\Transaction\TransactionEditScreen;
 
-Route::screen('transactions', TransactionListScreen::class)->name('platform.transactions.list')
-    ->breadcrumbs(fn(Trail $trail) => $trail
-        ->parent('platform.index')
-        ->push('Transactions', route('platform.transactions.list')));
+// Список транзакций
+Route::screen('/transactions', TransactionListScreen::class)
+    ->name('platform.transactions.list');
 
-Route::screen('transactions/create', TransactionEditScreen::class)->name('platform.transactions.create')
-    ->breadcrumbs(fn(Trail $trail) => $trail
-        ->parent('platform.transactions.list')
-        ->push('Create Transaction', route('platform.transactions.create')));
+// Создание транзакции
+Route::screen('/transactions/create', TransactionCreateScreen::class)
+    ->name('platform.transactions.create');
 
-Route::screen('transactions/{transaction}/edit', TransactionEditScreen::class)->name('platform.transactions.edit')
-    ->breadcrumbs(fn(Trail $trail, $transaction) => $trail
-        ->parent('platform.transactions.list')
-        ->push('Edit Transaction', route('platform.transactions.edit', $transaction)));
+// Редактирование транзакции
+Route::screen('/transactions/{id}/edit', TransactionEditScreen::class)
+    ->name('platform.transactions.edit');
