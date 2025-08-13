@@ -29,7 +29,7 @@ class ConsumerEditScreen extends Screen
 
     public function name(): ?string
     {
-        return $this->user->exists ? 'Edit Consumer #' . $this->user->id : 'Create Consumer';
+        return $this->user->exists ? 'Edit Consumer' : 'Create Consumer';
     }
 
     public function description(): ?string
@@ -40,11 +40,12 @@ class ConsumerEditScreen extends Screen
     public function commandBar(): iterable
     {
         return [
+            // КРИТИЧЕСКИ ВАЖНО: Используем ТОЧНО ТАКУЮ ЖЕ комбинацию методов, как в вашем рабочем примере
             Button::make('Save')
                 ->icon('check')
                 ->method('save')
-                ->action(route('platform.consumers.edit', $this->user->id))
-                ->post(),
+                ->post()
+                ->noAjax(),
                 
             Button::make('Back')
                 ->icon('left')
@@ -56,6 +57,12 @@ class ConsumerEditScreen extends Screen
     {
         return [
             Layout::rows([
+                // Скрытое поле для явного указания ID (как в вашем рабочем примере)
+                Input::make('user_id')
+                    ->type('hidden')
+                    ->value($this->user->id)
+                    ->title(''),
+                    
                 Input::make('user.name')
                     ->title('Name')
                     ->required()
@@ -77,9 +84,14 @@ class ConsumerEditScreen extends Screen
 
     public function save(Request $request)
     {
+        // ПОЛНОСТЬЮ СООТВЕТСТВУЕТ ВАШЕМУ РАБОЧЕМУ ПРИМЕРУ:
+        // Получаем ID из URL, а не из параметров
+        $id = $request->route('id');
+        $this->user = User::findOrFail($id);
+        
         $data = $request->validate([
             'user.name' => 'required|string|max:255',
-            'user.email' => 'required|email|unique:users,email,' . $this->user->id,
+            'user.email' => 'required|email|unique:users,email,' . $id,
             'user.password' => 'nullable|string|min:6',
         ])['user'];
 
@@ -97,14 +109,12 @@ class ConsumerEditScreen extends Screen
         $consumerRole = Role::where('slug', 'consumer')->first();
         
         if ($consumerRole) {
-            // Проверяем, есть ли у пользователя эта роль
             $hasRole = $this->user->roles->contains($consumerRole);
             
             if (!$hasRole) {
                 $this->user->roles()->attach($consumerRole);
             }
         } else {
-            // Создаем роль, если её нет
             $consumerRole = Role::create([
                 'name' => 'Consumer',
                 'slug' => 'consumer',
