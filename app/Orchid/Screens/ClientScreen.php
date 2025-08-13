@@ -99,7 +99,7 @@ class ClientScreen extends Screen
 
                     Input::make('client.password')
                         ->title('Password')
-                        ->type('password')
+                        //->type('password')
                         ->placeholder('Enter password')
                         ->required(),
 
@@ -125,7 +125,7 @@ class ClientScreen extends Screen
         ];
     }
 
-    public function save(Request $request, VpnService $vpn)
+    public function save(Request $request)
     {
         $request->validate([
             'client.name' => 'required|string|max:50|unique:clients,name',
@@ -137,10 +137,19 @@ class ClientScreen extends Screen
         $data = $request->input('client');
 
         try {
+            // Сначала создаем клиента в БД
             $client = Client::create($data);
+
+            // Затем инициализируем VpnService с ВЫБРАННЫМ сервером
+            $vpn = new VpnService($client->server_name); // Вот ключевое изменение!
             $vpn->addUser($client->name, $client->password);
-            Toast::success("✅ Client '{$client->name}' created and added to VPN");
+
+            Toast::success("✅ Client '{$client->name}' created on server {$client->server_name}");
         } catch (\Exception $e) {
+            // Удаляем клиента из БД, если не удалось добавить на VPN
+            if (isset($client)) {
+                $client->delete();
+            }
             Toast::error('❌ Error: ' . $e->getMessage());
         }
     }
@@ -153,9 +162,13 @@ class ClientScreen extends Screen
         $name = $client->name;
 
         try {
+            // Создаем экземпляр VpnService с сервером из записи клиента
+            $vpn = new VpnService($client->server_name);
+
             $vpn->removeUser($name);
             $client->delete();
-            Toast::success("🗑️ Client '{$name}' removed from VPN and database");
+
+            Toast::success("🗑️ Client '{$name}' removed from server {$vpn->getCurrentServer()}");
         } catch (\Exception $e) {
             Toast::error('❌ Error: ' . $e->getMessage());
         }

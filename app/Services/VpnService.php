@@ -9,6 +9,7 @@ class VpnService
 {
     protected string $baseUrl;
     protected string $secretKey;
+    protected string $serverName;
 
     public function __construct(string $serverName = null)
     {
@@ -17,6 +18,7 @@ class VpnService
 
     private function initConfig(string $serverName): void
     {
+        $this->serverName = $serverName;
         $servers = config('vpn.servers');
 
         if (!isset($servers[$serverName])) {
@@ -28,6 +30,12 @@ class VpnService
         $this->secretKey = $server['secret_key'];
     }
 
+    // Добавляем метод для получения текущего сервера
+    public function getCurrentServer(): string
+    {
+        return $this->serverName;
+    }
+
     public function getUsers(): array
     {
         return $this->request('get_users', []);
@@ -35,6 +43,11 @@ class VpnService
 
     public function addUser(string $username, string $password): void
     {
+        \Log::debug("Adding user to server: {$this->serverName}", [
+            'baseUrl' => $this->baseUrl,
+            'server' => $this->serverName
+        ]);
+
         $this->request('add_user', [
             'username' => $username,
             'password' => $password,
