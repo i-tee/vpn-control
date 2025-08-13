@@ -8,7 +8,6 @@ use Orchid\Screen\Screen;
 use Orchid\Support\Facades\Layout;
 use Orchid\Screen\TD;
 use Orchid\Screen\Actions\Link;
-use Illuminate\Http\Request;
 
 class ConsumerListScreen extends Screen
 {
@@ -24,12 +23,11 @@ class ConsumerListScreen extends Screen
 
     public function query(): array
     {
-        $query = User::whereHas('roles', function ($query) {
-            $query->where('slug', 'consumer');
-        })->withCount('clients'); // Загружаем количество клиентов для оптимизации
+        // Получаем данные ТОЛЬКО через сервис с пагинацией
+        $users = $this->binderService->getConsumerListData();
         
         return [
-            'users' => $query->orderBy('created_at', 'desc')->paginate(20),
+            'users' => $users,
         ];
     }
 
@@ -69,11 +67,18 @@ class ConsumerListScreen extends Screen
                 TD::make('email', 'Email')
                     ->sort(),
                 
-                // НОВАЯ КОЛОНКА С КОЛИЧЕСТВОМ VPN КЛИЕНТОВ
-                TD::make('clients_count', 'VPN Clients')
+                // Колонка с количеством VPN клиентов
+                TD::make('vpn_clients_count', 'VPN Clients')
                     ->sort()
                     ->render(fn ($user) => 
-                        $this->binderService->countVpnClientsForUser($user)
+                        $user->vpn_clients_count
+                    ),
+                
+                // Колонка с балансом пользователя
+                TD::make('balance', 'Balance')
+                    ->sort()
+                    ->render(fn ($user) => 
+                        '$' . number_format($user->balance, 2)
                     ),
                 
                 TD::make('created_at', 'Date')
