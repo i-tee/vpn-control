@@ -36,7 +36,7 @@ class PlatformProvider extends OrchidServiceProvider
         return [
 
             Menu::make('VPN Clients')
-                ->icon('bs.people')
+                ->icon('bs.lock')
                 ->title('VPN')
                 //->badge(fn() => \App\Models\Client::class::count())
                 ->route('platform.clients'),
@@ -58,8 +58,11 @@ class PlatformProvider extends OrchidServiceProvider
 
             Menu::make('Transactions')
                 ->icon('wallet')
-                ->title('Currency')
                 ->route('platform.transactions.list'),
+
+            Menu::make('Consumers')
+                ->icon('people')
+                ->route('platform.consumers.list'),
 
             // Menu::make('Layouts Overview')
             //     ->icon('bs.window-sidebar')

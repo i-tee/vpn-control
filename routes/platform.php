@@ -128,3 +128,19 @@ Route::screen('transactions/create', TransactionCreateScreen::class)
 // Редактирование транзакции (ИСПОЛЬЗУЕМ {id} ВМЕСТО {transaction})
 Route::screen('transactions/{id}/edit', TransactionEditScreen::class)
     ->name('platform.transactions.edit');
+
+use App\Orchid\Screens\Consumer\ConsumerListScreen;
+use App\Orchid\Screens\Consumer\ConsumerCreateScreen;
+use App\Orchid\Screens\Consumer\ConsumerEditScreen;
+
+// Список потребителей
+Route::screen('consumers', ConsumerListScreen::class)
+    ->name('platform.consumers.list');
+
+// Создание потребителя
+Route::screen('consumers/create', ConsumerCreateScreen::class)
+    ->name('platform.consumers.create');
+
+// Редактирование потребителя
+Route::screen('consumers/{id}/edit', ConsumerEditScreen::class)
+    ->name('platform.consumers.edit');
