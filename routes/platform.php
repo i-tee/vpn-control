@@ -118,13 +118,13 @@ use App\Orchid\Screens\Transaction\TransactionCreateScreen;
 use App\Orchid\Screens\Transaction\TransactionEditScreen;
 
 // Список транзакций
-Route::screen('/transactions', TransactionListScreen::class)
+Route::screen('transactions', TransactionListScreen::class)
     ->name('platform.transactions.list');
 
 // Создание транзакции
-Route::screen('/transactions/create', TransactionCreateScreen::class)
+Route::screen('transactions/create', TransactionCreateScreen::class)
     ->name('platform.transactions.create');
 
-// Редактирование транзакции
-Route::screen('/transactions/{id}/edit', TransactionEditScreen::class)
+// Редактирование транзакции (ИСПОЛЬЗУЕМ {id} ВМЕСТО {transaction})
+Route::screen('transactions/{id}/edit', TransactionEditScreen::class)
     ->name('platform.transactions.edit');

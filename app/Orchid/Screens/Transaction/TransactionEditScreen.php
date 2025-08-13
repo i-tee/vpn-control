@@ -3,6 +3,7 @@
 namespace App\Orchid\Screens\Transaction;
 
 use App\Models\Transaction;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Orchid\Screen\Fields\Input;
 use Orchid\Screen\Fields\Select;
@@ -23,15 +24,16 @@ class TransactionEditScreen extends Screen
 
     public function query($id): iterable
     {
-        $this->transaction = Transaction::with('user')->findOrFail($id);
+        $this->transaction = Transaction::findOrFail($id);
         return [
             'transaction' => $this->transaction,
+            'users' => User::all()->pluck('name', 'id')->toArray(),
         ];
     }
 
     public function name(): ?string
     {
-        return $this->transaction->exists ? 'Edit Transaction #' . $this->transaction->id : 'Create Transaction';
+        return $this->transaction->exists ? 'Edit Transaction' : 'Create Transaction';
     }
 
     public function description(): ?string
@@ -42,11 +44,12 @@ class TransactionEditScreen extends Screen
     public function commandBar(): iterable
     {
         return [
+            // КРИТИЧЕСКИ ВАЖНО: Используем правильную комбинацию методов
             Button::make('Save')
                 ->icon('check')
                 ->method('save')
-                ->action(route('platform.transactions.edit', $this->transaction->id))
-                ->post(),
+                ->post()
+                ->noAjax(),
                 
             Button::make('Back')
                 ->icon('left')
@@ -58,15 +61,21 @@ class TransactionEditScreen extends Screen
     {
         return [
             Layout::rows([
+                // Скрытое поле для явного указания ID (необязательно, но полезно)
+                Input::make('transaction_id')
+                    ->type('hidden')
+                    ->value($this->transaction->id)
+                    ->title(''),
+                    
                 Relation::make('transaction.user_id')
                     ->title('User')
-                    ->fromModel(\App\Models\User::class, 'name', 'id')
+                    ->fromModel(User::class, 'name', 'id')
                     ->value($this->transaction->user_id)
                     ->required(),
                     
                 Select::make('transaction.type')
                     ->options([
-                        'deposit' => 'Deposit',
+                        'deposit' => 'Deposit', 
                         'withdraw' => 'Withdraw'
                     ])
                     ->title('Type')
@@ -104,6 +113,10 @@ class TransactionEditScreen extends Screen
 
     public function save(Request $request)
     {
+        // Получаем ID транзакции из URL, а не из параметров
+        $id = $request->route('id');
+        $this->transaction = Transaction::findOrFail($id);
+        
         $data = $request->validate([
             'transaction.user_id' => 'required|exists:users,id',
             'transaction.type' => 'required|in:deposit,withdraw',
@@ -123,7 +136,7 @@ class TransactionEditScreen extends Screen
             $data['is_active']
         );
 
-        Toast::info('Transaction updated');
+        Toast::info('Transaction updated successfully');
         return redirect()->route('platform.transactions.list');
     }
 }
