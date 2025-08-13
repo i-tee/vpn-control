@@ -3,21 +3,30 @@
 namespace App\Orchid\Screens\Consumer;
 
 use App\Models\User;
-use Orchid\Screen\Actions\Link;
+use App\Services\BinderService;
 use Orchid\Screen\Screen;
 use Orchid\Support\Facades\Layout;
 use Orchid\Screen\TD;
-use Orchid\Screen\Actions\Button;
-use Orchid\Support\Facades\Toast;
+use Orchid\Screen\Actions\Link;
+use Illuminate\Http\Request;
 
 class ConsumerListScreen extends Screen
 {
-    public function query(): iterable
+    /**
+     * @var BinderService
+     */
+    protected $binderService;
+    
+    public function __construct(BinderService $binderService)
     {
-        // Получаем пользователей с ролью "consumer"
+        $this->binderService = $binderService;
+    }
+
+    public function query(): array
+    {
         $query = User::whereHas('roles', function ($query) {
             $query->where('slug', 'consumer');
-        });
+        })->withCount('clients'); // Загружаем количество клиентов для оптимизации
         
         return [
             'users' => $query->orderBy('created_at', 'desc')->paginate(20),
@@ -34,7 +43,7 @@ class ConsumerListScreen extends Screen
         return 'List of all consumers in the system';
     }
 
-    public function commandBar(): iterable
+    public function commandBar(): array
     {
         return [
             Link::make('Create new')
@@ -43,7 +52,7 @@ class ConsumerListScreen extends Screen
         ];
     }
 
-    public function layout(): iterable
+    public function layout(): array
     {
         return [
             Layout::table('users', [
@@ -59,6 +68,13 @@ class ConsumerListScreen extends Screen
                 
                 TD::make('email', 'Email')
                     ->sort(),
+                
+                // НОВАЯ КОЛОНКА С КОЛИЧЕСТВОМ VPN КЛИЕНТОВ
+                TD::make('clients_count', 'VPN Clients')
+                    ->sort()
+                    ->render(fn ($user) => 
+                        $this->binderService->countVpnClientsForUser($user)
+                    ),
                 
                 TD::make('created_at', 'Date')
                     ->sort()
