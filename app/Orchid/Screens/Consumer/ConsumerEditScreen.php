@@ -45,11 +45,7 @@ class ConsumerEditScreen extends Screen
                 ->icon('check')
                 ->method('save')
                 ->post()
-                ->noAjax(),
-                
-            Button::make('Back')
-                ->icon('left')
-                ->route('platform.consumers.list'),
+                ->noAjax()
         ];
     }
 

@@ -49,11 +49,7 @@ class TransactionEditScreen extends Screen
                 ->icon('check')
                 ->method('save')
                 ->post()
-                ->noAjax(),
-                
-            Button::make('Back')
-                ->icon('left')
-                ->route('platform.transactions.list'),
+                ->noAjax()
         ];
     }
 

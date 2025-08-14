@@ -119,15 +119,24 @@ use App\Orchid\Screens\Transaction\TransactionEditScreen;
 
 // Список транзакций
 Route::screen('transactions', TransactionListScreen::class)
-    ->name('platform.transactions.list');
+    ->name('platform.transactions.list')
+    ->breadcrumbs(fn(Trail $trail) => $trail
+        ->parent('platform.index')
+        ->push('Transactions'));
 
 // Создание транзакции
 Route::screen('transactions/create', TransactionCreateScreen::class)
-    ->name('platform.transactions.create');
+    ->name('platform.transactions.create')
+    ->breadcrumbs(fn(Trail $trail) => $trail
+        ->parent('platform.transactions.list')
+        ->push('Create'));
 
 // Редактирование транзакции (ИСПОЛЬЗУЕМ {id} ВМЕСТО {transaction})
 Route::screen('transactions/{id}/edit', TransactionEditScreen::class)
-    ->name('platform.transactions.edit');
+    ->name('platform.transactions.edit')
+    ->breadcrumbs(fn(Trail $trail) => $trail
+        ->parent('platform.transactions.list')
+        ->push('Edit'));
 
 use App\Orchid\Screens\Consumer\ConsumerListScreen;
 use App\Orchid\Screens\Consumer\ConsumerCreateScreen;
@@ -135,12 +144,21 @@ use App\Orchid\Screens\Consumer\ConsumerEditScreen;
 
 // Список потребителей
 Route::screen('consumers', ConsumerListScreen::class)
-    ->name('platform.consumers.list');
+    ->name('platform.consumers.list')
+    ->breadcrumbs(fn(Trail $trail) => $trail
+        ->parent('platform.index')
+        ->push('Consumers'));
 
 // Создание потребителя
 Route::screen('consumers/create', ConsumerCreateScreen::class)
-    ->name('platform.consumers.create');
+    ->name('platform.consumers.create')
+    ->breadcrumbs(fn(Trail $trail) => $trail
+        ->parent('platform.consumers.list')
+        ->push('Create'));
 
 // Редактирование потребителя
 Route::screen('consumers/{id}/edit', ConsumerEditScreen::class)
-    ->name('platform.consumers.edit');
+    ->name('platform.consumers.edit')
+    ->breadcrumbs(fn(Trail $trail) => $trail
+        ->parent('platform.consumers.list')
+        ->push('Edit'));
