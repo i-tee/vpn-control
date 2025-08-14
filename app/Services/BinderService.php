@@ -20,7 +20,7 @@ class BinderService
     public function countVpnClientsForUser($user): int
     {
         $userId = $user instanceof User ? $user->id : $user;
-        
+
         return Client::where('user_id', $userId)->count();
     }
 
@@ -33,12 +33,12 @@ class BinderService
     public function getUserBalance($user): float
     {
         $userId = $user instanceof User ? $user->id : $user;
-        
+
         $balance = Transaction::where('user_id', $userId)
             ->where('is_active', true)
             ->selectRaw('SUM(CASE WHEN type = "deposit" THEN amount ELSE -amount END) as balance')
             ->value('balance') ?? 0;
-            
+
         return (float) $balance;
     }
 
@@ -55,16 +55,16 @@ class BinderService
         $users = User::whereHas('roles', function ($query) {
             $query->where('slug', 'consumer');
         })->with('clients')
-          ->orderBy('created_at', 'desc')
-          ->paginate($perPage, ['*'], 'page', $page);
-        
+            ->orderBy('created_at', 'desc')
+            ->paginate($perPage, ['*'], 'page', $page);
+
         // Добавляем вычисляемые атрибуты
         $users->getCollection()->transform(function ($user) {
             $user->setAttribute('vpn_clients_count', $this->countVpnClientsForUser($user));
             $user->setAttribute('balance', $this->getUserBalance($user));
             return $user;
         });
-        
+
         return $users;
     }
 
@@ -78,13 +78,40 @@ class BinderService
     {
         $userId = $user instanceof User ? $user->id : $user;
         $user = User::with('roles')->find($userId);
-        
+
         if (!$user) {
             return false;
         }
-        
+
         return $user->roles->contains(function ($role) {
             return $role->slug === 'consumer';
         });
+    }
+
+    /**
+     * Возвращает количество активных клиентов VPN у пользователя
+     *
+     * @param int|User $user
+     * @return int
+     */
+    public function countActiveVpnClientsForUser($user): int
+    {
+        $userId = $user instanceof User ? $user->id : $user;
+
+        return Client::where('user_id', $userId)
+            ->where('is_active', true)
+            ->count();
+    }
+
+    /**
+     * Возвращает всех пользователей с ролью consumer
+     *
+     * @return Collection
+     */
+    public function getConsumers(): Collection
+    {
+        return User::whereHas('roles', function ($query) {
+            $query->where('slug', 'consumer');
+        })->get();
     }
 }
