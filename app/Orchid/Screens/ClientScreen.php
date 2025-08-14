@@ -60,23 +60,41 @@ class ClientScreen extends Screen
         // 🌐 Серверы: ключи (имена) как значения, IP — в скобках
         $servers = collect(config('vpn.servers'))
             ->mapWithKeys(fn($server, $key) => [
-                $key => "$key ({$server['host']})"
+                $key => "$key"
             ])
             ->toArray();
 
         return [
             // Таблица с клиентами — все поля
             Layout::table('clients', [
-                TD::make('id', '#'),
+                TD::make('id', 'id'),
                 TD::make('name', 'Username'),
                 TD::make('password', 'Password'), // Пароль — просто текст
                 TD::make('user_id', 'Owner')
                     ->render(fn(Client $client) => $client->user?->name ?? '—'),
                 TD::make('server_name', 'Server'),
-                TD::make('telegram_nickname', 'Telegram'),
+                //TD::make('telegram_nickname', 'Telegram'),
                 TD::make('created_at', 'Created')
                     ->render(fn($client) => $client->created_at->format('d.m.Y H:i')),
 
+                TD::make('is_active', 'Status')
+                    ->sort()
+                    ->render(
+                        fn(Client $client) =>
+                        $client->is_active
+                            ? '<span class="badge bg-success">Active</span>'
+                            : '<span class="badge bg-danger">Inactive</span>'
+                    ),
+                TD::make('swapstatus', 'Actions')
+                    ->align(TD::ALIGN_CENTER)
+                    ->render(
+                        fn(Client $client) =>
+                        Button::make('Swap Status')
+                            ->icon('recycle')
+                            ->confirm("Swap Status from '{$client->name}'?")
+                            ->method('swap', ['id' => $client->id])
+                            ->className('btn btn-danger btn-sm')
+                    ),
                 TD::make('actions', 'Actions')
                     ->align(TD::ALIGN_CENTER)
                     ->render(
@@ -86,7 +104,7 @@ class ClientScreen extends Screen
                             ->confirm("Delete client '{$client->name}'?")
                             ->method('delete', ['id' => $client->id])
                             ->className('btn btn-danger btn-sm')
-                    ),
+                    )
             ]),
 
             // Модальное окно: только создание
@@ -115,9 +133,9 @@ class ClientScreen extends Screen
                         ->value(config('vpn.default_server'))
                         ->required(),
 
-                    Input::make('client.telegram_nickname')
-                        ->title('Telegram')
-                        ->placeholder('@username'),
+                    // Input::make('client.telegram_nickname')
+                    //     ->title('Telegram')
+                    //     ->placeholder('@username'),
                 ]),
             ])->title('Create Client')
                 ->applyButton('Create')
@@ -144,13 +162,13 @@ class ClientScreen extends Screen
             $vpn = new VpnService($client->server_name); // Вот ключевое изменение!
             $vpn->addUser($client->name, $client->password);
 
-            Toast::success("✅ Client '{$client->name}' created on server {$client->server_name}");
+            Toast::success("Client '{$client->name}' created on server {$client->server_name}");
         } catch (\Exception $e) {
             // Удаляем клиента из БД, если не удалось добавить на VPN
             if (isset($client)) {
                 $client->delete();
             }
-            Toast::error('❌ Error: ' . $e->getMessage());
+            Toast::error('Error: ' . $e->getMessage());
         }
     }
 
@@ -168,9 +186,39 @@ class ClientScreen extends Screen
             $vpn->removeUser($name);
             $client->delete();
 
-            Toast::success("🗑️ Client '{$name}' removed from server {$vpn->getCurrentServer()}");
+            Toast::success("Client '{$name}' removed from server {$vpn->getCurrentServer()}");
         } catch (\Exception $e) {
-            Toast::error('❌ Error: ' . $e->getMessage());
+            Toast::error('Error: ' . $e->getMessage());
+        }
+    }
+
+    public function swap(Request $request, VpnService $vpn)
+    {
+        $request->validate(['id' => 'required|exists:clients,id']);
+
+        $client = Client::findOrFail($request->input('id'));
+        $name = $client->name;
+
+        try {
+
+            // Создаем экземпляр VpnService с сервером из записи клиента
+            $vpn = new VpnService($client->server_name);
+
+            if ($client->is_active) {
+
+                $client->is_active = false;
+                $vpn->removeUser($name);
+            } else {
+
+                $client->is_active = true;
+                $vpn->addUser($client->name, $client->password);
+            }
+
+            $client->save();
+
+            Toast::success("Status now '{$client->is_active}'");
+        } catch (\Exception $e) {
+            Toast::error('Error: ' . $e->getMessage());
         }
     }
 }

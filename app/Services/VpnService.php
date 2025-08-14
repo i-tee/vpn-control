@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Client;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -30,7 +31,6 @@ class VpnService
         $this->secretKey = $server['secret_key'];
     }
 
-    // Добавляем метод для получения текущего сервера
     public function getCurrentServer(): string
     {
         return $this->serverName;
@@ -39,6 +39,82 @@ class VpnService
     public function getUsers(): array
     {
         return $this->request('get_users', []);
+    }
+
+    // Метод для добавления клиента на сервер и в БД
+    public function createClient(string $username, string $password, int $userId, ?string $telegramNickname = null, bool $activate = true): Client
+    {
+        // Создаем клиента в БД
+        $client = Client::create([
+            'name' => $username,
+            'password' => $password,
+            'user_id' => $userId,
+            'server_name' => $this->serverName,
+            'telegram_nickname' => $telegramNickname,
+            'is_active' => $activate
+        ]);
+
+        // Если нужно активировать, добавляем на сервер
+        if ($activate) {
+            $this->addUser($username, $password);
+        }
+
+        return $client;
+    }
+
+    // Метод для активации клиента
+    public function activateClient(int $clientId): Client
+    {
+        $client = Client::findOrFail($clientId);
+        
+        if ($client->is_active) {
+            return $client;
+        }
+        
+        // Добавляем клиента на сервер
+        $this->addUser($client->name, $client->password);
+        
+        // Обновляем статус в БД
+        $client->update(['is_active' => true]);
+        
+        return $client;
+    }
+
+    // Метод для деактивации клиента
+    public function deactivateClient(int $clientId, string $reason = 'Deactivated via admin panel'): Client
+    {
+        $client = Client::findOrFail($clientId);
+        
+        if (!$client->is_active) {
+            return $client;
+        }
+        
+        // Удаляем клиента с сервера
+        $this->removeUser($client->name);
+        
+        // Обновляем статус в БД
+        $client->update([
+            'is_active' => false,
+            'comment' => $client->comment 
+                ? $client->comment . ' | ' . $reason 
+                : $reason
+        ]);
+        
+        return $client;
+    }
+
+    // Метод для удаления клиента
+    public function deleteClient(int $clientId): void
+    {
+        $client = Client::findOrFail($clientId);
+        
+        // Если клиент активен, сначала удаляем его с сервера
+        if ($client->is_active) {
+            $this->removeUser($client->name);
+        }
+        
+        // Удаляем клиента из БД
+        $client->delete();
     }
 
     public function addUser(string $username, string $password): void
