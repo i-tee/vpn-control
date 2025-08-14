@@ -41,11 +41,7 @@ class ConsumerCreateScreen extends Screen
             Button::make('Save')
                 ->icon('check')
                 ->method('save')
-                ->post(),
-                
-            Button::make('Back')
-                ->icon('left')
-                ->route('platform.consumers.list'),
+                ->post()
         ];
     }
 

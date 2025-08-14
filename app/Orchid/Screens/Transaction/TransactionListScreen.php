@@ -70,7 +70,7 @@ class TransactionListScreen extends Screen
                 
                 TD::make('amount', 'Amount')
                     ->sort()
-                    ->render(fn ($transaction) => number_format($transaction->amount, 2)),
+                    ->render(fn ($transaction) => '₽ ' . number_format($transaction->amount, 2)),
                 
                 TD::make('created_at', 'Date')
                     ->sort()

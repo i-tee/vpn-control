@@ -78,7 +78,7 @@ class ConsumerListScreen extends Screen
                 TD::make('balance', 'Balance')
                     ->sort()
                     ->render(fn ($user) => 
-                        '$' . number_format($user->balance, 2)
+                        '₽ ' . number_format($user->balance, 2)
                     ),
                 
                 TD::make('created_at', 'Date')

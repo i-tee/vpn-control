@@ -75,13 +75,14 @@ class VpnService
         $this->addUser($client->name, $client->password);
         
         // Обновляем статус в БД
-        $client->update(['is_active' => true]);
+        $client->is_active = true;
+        $client->save();
         
         return $client;
     }
 
     // Метод для деактивации клиента
-    public function deactivateClient(int $clientId, string $reason = 'Deactivated via admin panel'): Client
+    public function deactivateClient(int $clientId): Client
     {
         $client = Client::findOrFail($clientId);
         
@@ -93,12 +94,8 @@ class VpnService
         $this->removeUser($client->name);
         
         // Обновляем статус в БД
-        $client->update([
-            'is_active' => false,
-            'comment' => $client->comment 
-                ? $client->comment . ' | ' . $reason 
-                : $reason
-        ]);
+        $client->is_active = false;
+        $client->save();
         
         return $client;
     }

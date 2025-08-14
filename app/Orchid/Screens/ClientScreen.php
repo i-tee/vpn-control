@@ -206,15 +206,12 @@ class ClientScreen extends Screen
 
             if ($client->is_active) {
 
-                $client->is_active = false;
-                $vpn->removeUser($name);
+                $vpn->deactivateClient($client->id);
+
             } else {
 
-                $client->is_active = true;
-                $vpn->addUser($client->name, $client->password);
+                $vpn->activateClient($client->id);
             }
-
-            $client->save();
 
             Toast::success("Status now '{$client->is_active}'");
         } catch (\Exception $e) {
