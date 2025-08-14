@@ -10,4 +10,4 @@ Artisan::command('inspire', function () {
 use Illuminate\Support\Facades\Schedule;
 
 
-Schedule::command('vpn:test-charge')->dailyAt('12:23'); // +3h (15:00 MSK)
+Schedule::command('vpn:test-charge')->dailyAt('12:23'); // +3h (15:23 MSK)
