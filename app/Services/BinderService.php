@@ -11,6 +11,14 @@ use Illuminate\Support\Facades\DB;
 
 class BinderService
 {
+
+    public function getClientsForUser($user): array
+    {
+        $userId = $user instanceof User ? $user->id : $user;
+
+        return Client::where('user_id', $userId)->get()->all();
+    }
+
     /**
      * Возвращает количество клиентов VPN у пользователя
      *

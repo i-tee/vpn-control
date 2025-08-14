@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\BinderService;
 use Orchid\Filters\Types\Like;
 use Orchid\Filters\Types\Where;
 use Orchid\Filters\Types\WhereDateStartEnd;
@@ -70,6 +71,53 @@ class User extends Authenticatable
         'updated_at',
         'created_at',
     ];
+
+    public static function getClientsCountByTelegramId($telegramId)
+    {
+        $user_id =  self::where('telegram_id', $telegramId)->value('id');
+        $user = self::find($user_id);
+        $bs = new BinderService();
+        return $bs->countVpnClientsForUser($user);
+    }
+
+    public static function getClientsByTelegramId($telegramId)
+    {
+
+        $user = self::where('telegram_id', $telegramId)->first();   // сразу получаем модель
+        abort_if(!$user, 404, 'User not found');
+
+        $bs        = new BinderService();
+        $list      = $bs->getClientsForUser($user);
+
+        $plain = [];
+        foreach ($list as $row) {
+            $client = (is_array($row) && isset($row['App\Models\Client']))
+                ? $row['App\Models\Client']
+                : $row;
+
+            $plain[] = [
+                's' => $client['server_name'] ?? $client->server_name,
+                'n' => $client['name']        ?? $client->name,
+                'p' => $client['password']    ?? $client->password,
+            ];
+        }
+
+        \Log::debug('telegram_bot: -> clients {clients}', [
+            'clients' => $plain
+        ]);
+        return $plain;
+    }
+
+    public static function getIdByTelegramId($telegramId)
+    {
+        return self::where('telegram_id', $telegramId)->value('id');
+    }
+
+    public static function getBalanceByTelegramId($telegramId)
+    {
+        $user_id = self::where('telegram_id', $telegramId)->value('id');
+        return self::find($user_id)->balance();
+    }
 
     public function transactions()
     {

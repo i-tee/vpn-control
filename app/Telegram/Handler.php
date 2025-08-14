@@ -156,6 +156,91 @@ class Handler extends WebhookHandler
 
     public function addbalance(): void
     {
-        $this->reply('Нажата Кнопка addbalance');
+
+        $telegramUser = $this->message->from();
+        //$user_id = User::getIdByTelegramId($telegramUser->id());
+        $user_id = $telegramUser->id();
+
+        $this->reply("Нажата Кнопка {$user_id} addbalance");
+    }
+
+    public function x()
+    {
+        $user_id = $this->user_id();
+        $this->reply("Твой id: {$user_id} ");
+    }
+
+    public function y()
+    {
+        $count_clients = $this->user_clients_count();
+        $this->reply("VPN Клиентов: {$count_clients} ");
+    }
+
+    public function yl()
+    {
+        $clients = $this->user_clients();   // это уже массив вида
+        // [['s'=>'x.xab.su','n'=>'pups','p'=>'azlk2140'], …]
+
+        if (empty($clients)) {
+            $this->reply('У вас пока нет VPN-клиентов.');
+            return;
+        }
+
+        $lines = collect($clients)->map(
+            fn($c, $idx) => sprintf(
+                "🔑 VPN Клиент #%d\nСервер: %s\nЛогин: %s\nПароль: %s\n",
+                $idx + 1,
+                $c['s'],
+                $c['n'],
+                $c['p']
+            )
+        )->implode("\n");
+
+        $this->reply($lines);
+    }
+
+    public function z()
+    {
+        $user_balance = $this->user_balance();
+        $this->reply("Твой баланс: {$user_balance} ");
+    }
+
+    protected function user_id()
+    {
+        $telegramUser = $this->message->from();
+        return User::getIdByTelegramId($telegramUser->id());
+    }
+
+    protected function user_balance()
+    {
+        $telegramUser = $this->message->from();
+        return User::getBalanceByTelegramId($telegramUser->id());
+    }
+
+    protected function user_clients_count()
+    {
+        $telegramUser = $this->message->from();
+        return User::getClientsCountByTelegramId($telegramUser->id());
+    }
+
+    protected function user_clients()
+    {
+
+        Log::debug('telegram_bot:' . ' -> Start');
+
+        $telegramUser = $this->message->from();
+
+        // Правильный вариант с использованием массива данных
+        Log::debug('telegram_bot /// telegramUser: {user_id}', [
+            'user_id' => $telegramUser->id()
+        ]);
+
+        $clients = User::getClientsByTelegramId($telegramUser->id());
+
+        Log::debug('telegram_bot: -> COLIO {clients}', [
+            'clients' => $clients
+        ]);
+
+        return $clients;
     }
 }
