@@ -115,10 +115,10 @@ class Handler extends WebhookHandler
         ];
 
         // третья строка – всегда
-        // $rows[] = [
-        //     Button::make('Баланс')->action('checkbalance'),
-        //     Button::make('Пополнить')->action('addbalance'),
-        // ];
+        $rows[] = [
+            Button::make('Баланс')->action('showbalance'),
+            Button::make('Пополнить')->action('addbalance')->param('uid', $this->message->from()->id()),
+        ];
 
         // строим клавиатуру
         $keyboard = Keyboard::make();
@@ -182,14 +182,24 @@ class Handler extends WebhookHandler
         }
     }
 
-    public function checkbalance(): void
+    public function showbalance(): void
     {
-        Telegraph::message('Что-то тут с переменными проблемы')->send();
+        $user_balance = $this->getBalance();
+        $this->chat->message(
+            "Ваш баланс: {$user_balance} у.е.
+            \nРасход: " . config('vpn.default_price') . " у.е./сутки\nЕщё дней: " . ceil($user_balance / config('vpn.default_price'))
+        )->send();
     }
 
     public function addbalance(): void
     {
-        $this->reply("Нажата Кнопка addbalance");
+
+        $telegramId = $this->data->get('uid');   // параметр из callback_data
+        $user       = User::where('telegram_id', $telegramId)->first();
+
+        $this->chat->message(config('bot.text.paynenttest') . $user->id)->send();
+    
+        // Здесь можно добавить логику для пополнения баланса, если она будет реализована
     }
 
     public function instructionRow(): void
@@ -207,10 +217,10 @@ class Handler extends WebhookHandler
             ->send();
     }
 
-    public function x()
+    public function youid()
     {
         $user_id = $this->user_id();
-        $this->reply("Твой id: {$user_id} ");
+        $this->reply("Ваш id: {$user_id} ");
     }
 
     public function y()
@@ -280,20 +290,20 @@ class Handler extends WebhookHandler
     protected function user_clients()
     {
 
-        Log::debug('telegram_bot:' . ' -> Start');
+        // Log::debug('telegram_bot:' . ' -> Start');
 
-        //$telegramUser = $this->message->from();
+        // $telegramUser = $this->message->from();
 
         // Правильный вариант с использованием массива данных
-        Log::debug('telegram_bot /// telegramUser: {user_id}', [
-            'user_id' => $this->chat->chat_id
-        ]);
+        // Log::debug('telegram_bot /// telegramUser: {user_id}', [
+        //     'user_id' => $this->chat->chat_id
+        // ]);
 
         $clients = User::getClientsByTelegramId($this->chat->chat_id);
 
-        Log::debug('telegram_bot: -> COLIO {clients}', [
-            'clients' => $clients
-        ]);
+        // Log::debug('telegram_bot: -> COLIO {clients}', [
+        //     'clients' => $clients
+        // ]);
 
         return $clients;
     }
