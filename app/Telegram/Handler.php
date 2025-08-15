@@ -52,7 +52,7 @@ class Handler extends WebhookHandler
         )
             ->keyboard(
                 Keyboard::make()
-                    ->row([Button::make(config('bot.text.creat'))->action('myvpn')])
+                    ->row([Button::make(config('bot.text.creat'))->action('createCanal')])
                     ->row([
                         Button::make(config('bot.button.instruction'))->url(config('bot.link.instruction')),
                         Button::make(config('bot.button.support'))->url(config('bot.link.support'))
@@ -94,16 +94,14 @@ class Handler extends WebhookHandler
     private function greetExisting(\DefStudio\Telegraph\DTO\User $from): void
     {
 
-
-
         $rows = [];
 
         // первая строка – кнопка «Создать», если нужно
         $firstRow = [];
         if ($this->user_clients_count() >= 1) {
-            $firstRow[] = Button::make(config('bot.text.myclients'))->action('myvpn');
+            $firstRow[] = Button::make(config('bot.text.myclients'))->action('myClients');
         } else {
-            $firstRow[] = Button::make(config('bot.text.creat'))->action('myvpn');
+            $firstRow[] = Button::make(config('bot.text.creat'))->action('createCanal');
         }
         // если массив не пустой – добавляем строку
         if ($firstRow) {
@@ -168,7 +166,20 @@ class Handler extends WebhookHandler
 
     public function myvpn(): void
     {
-        $this->reply('Нажата Кнопка myvpn');
+        try {
+            // 1. Make sure the method exists inside this class
+            $this->myClients();          // ← will throw if this method is missing
+        } catch (\Throwable $e) {
+            // 2. Log the real reason
+            Log::error('telegram_bot: myvpn action failed', [
+                'chat' => $this->chat->chat_id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            // 3. Always send *something* back
+            $this->reply('Произошла ошибка. Попробуйте позже.');
+        }
     }
 
     public function checkbalance(): void
@@ -179,6 +190,21 @@ class Handler extends WebhookHandler
     public function addbalance(): void
     {
         $this->reply("Нажата Кнопка addbalance");
+    }
+
+    public function instructionRow(): void
+    {
+        $this->chat->message('Настрой за 1 минуту!')   // <-- обязательно
+            ->keyboard(
+                Keyboard::make()
+                    ->row([
+                        Button::make(config('bot.button.instruction'))
+                            ->url(config('bot.link.instruction')),
+                        Button::make(config('bot.button.support'))
+                            ->url(config('bot.link.support'))
+                    ])
+            )
+            ->send();
     }
 
     public function x()
@@ -195,8 +221,7 @@ class Handler extends WebhookHandler
 
     public function myClients()
     {
-        $clients = $this->user_clients();   // это уже массив вида
-        // [['s'=>'x.xab.su','n'=>'pups','p'=>'azlk2140'], …]
+        $clients = $this->user_clients();
 
         if (empty($clients)) {
             $this->reply('У вас пока нет VPN-каналов.');
@@ -205,15 +230,16 @@ class Handler extends WebhookHandler
 
         $lines = collect($clients)->map(
             fn($c, $idx) => sprintf(
-                "🔑 VPN Канал #%d\nСервер: %s\nЛогин: %s\nПароль: %s\n",
+                "🔑 VPN Канал #%d\nСервер: %s\nЛогин: <code>%s</code>\nПароль: <code>%s</code>",
                 $idx + 1,
-                $c['s'],
-                $c['n'],
-                $c['p']
+                e($c['s']),   // экранируем спецсимволы
+                e($c['n']),
+                e($c['p'])
             )
-        )->implode("\n");
+        )->implode("\n\n");
 
-        $this->reply($lines);
+        // Отправляем с parse_mode='HTML', чтобы <code> работал
+        $this->chat->html($lines)->send();
     }
 
     public function balance()
@@ -224,28 +250,31 @@ class Handler extends WebhookHandler
 
     public function createCanal()
     {
-        $r = $this->creatOneRandClient();
-
-        Telegraph::message($r)->send();
-
+        if ($this->creatOneRandClient()) {
+            $this->reply(config('bot.text.clientcreated'));
+            $this->myClients(); // Показываем список клиентов после создания
+            $this->instructionRow(); // Отправляем инструкцию
+        } else {
+            $this->reply(config('bot.text.clientcreaterror'));
+        }
     }
 
     protected function user_id()
     {
-        $telegramUser = $this->message->from();
-        return User::getIdByTelegramId($telegramUser->id());
+        //$telegramUser = $this->message->from();
+        return User::getIdByTelegramId($this->chat->chat_id);
     }
 
     protected function getBalance()
     {
-        $telegramUser = $this->message->from();
-        return User::getBalanceByTelegramId($telegramUser->id());
+        //$telegramUser = $this->message->from();
+        return User::getBalanceByTelegramId($this->chat->chat_id);
     }
 
     protected function user_clients_count()
     {
-        $telegramUser = $this->message->from();
-        return User::getClientsCountByTelegramId($telegramUser->id());
+        //$telegramUser = $this->message->from();
+        return User::getClientsCountByTelegramId($this->chat->chat_id);
     }
 
     protected function user_clients()
@@ -253,14 +282,14 @@ class Handler extends WebhookHandler
 
         Log::debug('telegram_bot:' . ' -> Start');
 
-        $telegramUser = $this->message->from();
+        //$telegramUser = $this->message->from();
 
         // Правильный вариант с использованием массива данных
         Log::debug('telegram_bot /// telegramUser: {user_id}', [
-            'user_id' => $telegramUser->id()
+            'user_id' => $this->chat->chat_id
         ]);
 
-        $clients = User::getClientsByTelegramId($telegramUser->id());
+        $clients = User::getClientsByTelegramId($this->chat->chat_id);
 
         Log::debug('telegram_bot: -> COLIO {clients}', [
             'clients' => $clients
@@ -271,12 +300,7 @@ class Handler extends WebhookHandler
 
     protected function creatOneRandClient()
     {
-
-
         $user_id = $this->user_id();
-        $v = User::creatOneClientFromTelegram($user_id);
-
-        return $v;
-
+        return User::creatOneClientFromTelegram($user_id);
     }
 }

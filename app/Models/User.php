@@ -135,7 +135,7 @@ class User extends Authenticatable
         $vpn = new VpnService();
         $user = self::find($user_id);
 
-        $vpn->createClient(
+        $result = $vpn->createClient(
             $user->telegram_username,
             $user->telegram_id,
             $user_id,
@@ -143,7 +143,10 @@ class User extends Authenticatable
             true
         );
 
-        return 'true';
+        if (!$result) {
+            return false; // Клиент с таким именем уже существует
+        }
+        return true;
 
     }
 

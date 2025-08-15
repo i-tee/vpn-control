@@ -42,8 +42,20 @@ class VpnService
     }
 
     // Метод для добавления клиента на сервер и в БД
-    public function createClient(string $username, string $password, int $userId, ?string $telegramNickname = null, bool $activate = true): Client
-    {
+    public function createClient(
+        string $username,
+        string $password,
+        int $userId,
+        ?string $telegramNickname = null,
+        bool $activate = true
+    ): Client|false {
+        // Проверяем, существует ли уже клиент с таким именем
+        $exists = Client::where('name', $username)->exists();
+
+        if ($exists) {
+            return false; // Клиент с таким именем уже существует
+        }
+
         // Создаем клиента в БД
         $client = Client::create([
             'name' => $username,
@@ -54,7 +66,6 @@ class VpnService
             'is_active' => $activate
         ]);
 
-        // Если нужно активировать, добавляем на сервер
         if ($activate) {
             $this->addUser($username, $password);
         }
@@ -66,18 +77,18 @@ class VpnService
     public function activateClient(int $clientId): Client
     {
         $client = Client::findOrFail($clientId);
-        
+
         if ($client->is_active) {
             return $client;
         }
-        
+
         // Добавляем клиента на сервер
         $this->addUser($client->name, $client->password);
-        
+
         // Обновляем статус в БД
         $client->is_active = true;
         $client->save();
-        
+
         return $client;
     }
 
@@ -85,18 +96,18 @@ class VpnService
     public function deactivateClient(int $clientId): Client
     {
         $client = Client::findOrFail($clientId);
-        
+
         if (!$client->is_active) {
             return $client;
         }
-        
+
         // Удаляем клиента с сервера
         $this->removeUser($client->name);
-        
+
         // Обновляем статус в БД
         $client->is_active = false;
         $client->save();
-        
+
         return $client;
     }
 
@@ -104,12 +115,12 @@ class VpnService
     public function deleteClient(int $clientId): void
     {
         $client = Client::findOrFail($clientId);
-        
+
         // Если клиент активен, сначала удаляем его с сервера
         if ($client->is_active) {
             $this->removeUser($client->name);
         }
-        
+
         // Удаляем клиента из БД
         $client->delete();
     }
