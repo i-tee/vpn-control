@@ -10,138 +10,160 @@ use Orchid\Platform\Models\Role;
 use App\Models\Transaction;
 use DefStudio\Telegraph\Keyboard\Keyboard;
 use DefStudio\Telegraph\Keyboard\Button;
+use DefStudio\Telegraph\Facades\Telegraph;
 
 class Handler extends WebhookHandler
 {
 
-    public function start()
+    public function start(): void
     {
-        $telegramUser = $this->message->from();
+        $from = $this->message->from();
 
-        if ($telegramUser->isBot()) {
-            Log::info('Бот пытался зарегистрироваться', ['telegram_id' => $telegramUser->id()]); // INFO вместо WARNING, если это нормальное поведение
-            $this->reply(__('К сожалению, боты не могут регистрироваться.'));
+        if ($from->isBot()) {
+            $this->reply(__('Боты не могут регистрироваться.'));
             return;
         }
 
-        try {
-            $defaultServer = config('vpn.default_server');
-            $entry_bonus = config('vpn.entry_bonus');
+        $user = User::where('telegram_id', $from->id())->first();
 
-            $telegramUsername = $telegramUser->username();
-            if (empty($telegramUsername)) {
-                $telegramUsername = 'tg_' . $telegramUser->id();
-            }
-            $generatedEmail = $telegramUsername . '@' . $defaultServer;
-
-            $password = (string) $telegramUser->id();
-
-            // Подготавливаем данные для создания/обновления пользователя
-            $userData = [
-                'telegram_first_name' => $telegramUser->firstName(),
-                'telegram_last_name'  => $telegramUser->lastName(),
-                'telegram_username'   => $telegramUser->username(),
-                'name' => trim($telegramUser->firstName() . ' ' . ($telegramUser->lastName() ?? '')) ?: ('TG_User_' . $telegramUser->id()),
-                'email' => $generatedEmail,
-                'password' => bcrypt($password),
-            ];
-
-            // Создаем или находим пользователя
-            $user = User::updateOrCreate(
-                ['telegram_id' => $telegramUser->id()],
-                $userData
-            );
-
-
-            // Проверим, был ли пользователь создан (новый)
-            if ($user->wasRecentlyCreated) {
-                // --- Присвоение роли ---
-                $consumerRole = Role::where('slug', 'consumer')->first();
-
-                if ($consumerRole) {
-                    $user->roles()->attach($consumerRole->id);
-
-                    // --- Начисление бонуса ---
-                    try {
-                        $bonusTransaction = Transaction::createTransaction(
-                            userId: $user->id,
-                            type: 'deposit',
-                            amount: $entry_bonus,
-                            comment: 'Вступительный бонус'
-                        );
-
-                        // Отправляем сообщение с уведомлением о бонусе
-                        $this->reply(__('Вам начислен вступительный бонус ' . $entry_bonus . ' у.е.!'));
-                    } catch (\Exception $transactionException) {
-                        // Логируем ошибку начисления
-                        Log::error('Ошибка при начислении бонуса', [
-                            'user_id' => $user->id,
-                            'telegram_id' => $telegramUser->id(),
-                            'error' => $transactionException->getMessage()
-                        ]);
-                        // Пользователь получит общее сообщение об успешной регистрации
-                    }
-                } else {
-                    Log::error('Роль "consumer" не найдена', ['telegram_id' => $telegramUser->id()]);
-                }
-            } // else - повторный /start, ничего не делаем
-
-
-            // Отправляем приветственное сообщение (всем)
-            //$this->reply(__('Добро пожаловать, :name!', ['name' => $telegramUser->firstName()]));
-
-            $this->chat->message(__('Добро пожаловать, :name!', ['name' => $telegramUser->firstName()]))
-                ->keyboard(
-                    Keyboard::make()
-                        ->row([
-                            Button::make('Мой VPN')->action('myvpn'),
-                            Button::make('Как настроить')->url('https://gatekeeper.xab.su/help'),
-                        ])
-                        ->row([
-                            Button::make('Баланс')->action('checkbalance'),
-                            Button::make('Пополнить')->action('addbalance'),
-                        ])
-                )
-                ->send();
-        } catch (\Exception $e) {
-            Log::error('Ошибка регистрации из Telegram', [
-                'telegram_id' => $telegramUser->id(),
-                'error' => $e->getMessage()
-            ]);
-            $this->reply(__('Произошла ошибка при регистрации. Попробуйте позже.'));
+        if ($user) {
+            // Уже был
+            $this->greetExisting($from);
+        } else {
+            // Первый раз
+            $user = $this->registerUser($from);
+            $this->greetNewcomer($from);
+            $this->awardBonus($user);
         }
     }
+
+    /**
+     * Summary of greetNewcomer
+     * @param \DefStudio\Telegraph\DTO\User $from
+     * @return void
+     * Отправляет приветственное сообщение новому пользователю.
+     */
+    private function greetNewcomer(\DefStudio\Telegraph\DTO\User $from): void
+    {
+        $d = ceil(config('vpn.entry_bonus') / config('vpn.default_price')); // Количество дней бесплатного доступа
+
+        $this->chat->message(
+            "👋 Привет, {$from->firstName()}!\n" . config('bot.text.welcome') . "\n\n{$d} дней бесплатно"
+        )
+            ->keyboard(
+                Keyboard::make()
+                    ->row([Button::make(config('bot.text.creat'))->action('myvpn')])
+                    ->row([
+                        Button::make(config('bot.button.instruction'))->url(config('bot.link.instruction')),
+                        Button::make(config('bot.button.support'))->url(config('bot.link.support'))
+                    ])
+            )
+            ->send();
+    }
+
+    private function registerUser(\DefStudio\Telegraph\DTO\User $from): User
+    {
+        $server = config('vpn.default_server');
+        $name   = trim($from->firstName() . ' ' . ($from->lastName() ?? ''))
+            ?: 'TG_User_' . $from->id();
+
+        $user = User::create([
+            'telegram_id'         => $from->id(),
+            'telegram_first_name' => $from->firstName(),
+            'telegram_last_name'  => $from->lastName(),
+            'telegram_username'   => $from->username(),
+            'name'                => $name,
+            'email'               => ($from->username() ?: 'tg_' . $from->id()) . "@$server",
+            'password'            => bcrypt((string)$from->id()),
+        ]);
+
+        $role = Role::where('slug', 'consumer')->first();
+        if ($role) {
+            $user->roles()->attach($role->id);
+        }
+
+        return $user;
+    }
+
+    /**
+     * Summary of greetExisting
+     * @param \DefStudio\Telegraph\DTO\User $from
+     * @return void
+     * Отправляет приветственное сообщение существующему пользователю.
+     */
+    private function greetExisting(\DefStudio\Telegraph\DTO\User $from): void
+    {
+
+
+
+        $rows = [];
+
+        // первая строка – кнопка «Создать», если нужно
+        $firstRow = [];
+        if ($this->user_clients_count() >= 1) {
+            $firstRow[] = Button::make(config('bot.text.myclients'))->action('myvpn');
+        } else {
+            $firstRow[] = Button::make(config('bot.text.creat'))->action('myvpn');
+        }
+        // если массив не пустой – добавляем строку
+        if ($firstRow) {
+            $rows[] = $firstRow;
+        }
+
+        // вторая строка – всегда
+        $rows[] = [
+            Button::make(config('bot.button.instruction'))->url(config('bot.link.instruction')),
+            Button::make(config('bot.button.support'))->url(config('bot.link.support'))
+        ];
+
+        // третья строка – всегда
+        // $rows[] = [
+        //     Button::make('Баланс')->action('checkbalance'),
+        //     Button::make('Пополнить')->action('addbalance'),
+        // ];
+
+        // строим клавиатуру
+        $keyboard = Keyboard::make();
+        foreach ($rows as $row) {
+            $keyboard = $keyboard->row($row);
+        }
+
+        $this->chat->message(__('Добро пожаловать, :name!', ['name' => $from->firstName()]))
+            ->keyboard($keyboard)
+            ->send();
+    }
+
+    /**
+     * /
+     * @param \App\Models\User $user
+     * @return void
+     * Начисляет вступительный бонус пользователю.
+     * Бонус берется из конфигурации vpn.entry_bonus.
+     */
+    private function awardBonus(User $user): void
+    {
+        $bonus = config('vpn.entry_bonus');
+        try {
+            Transaction::createTransaction(
+                userId: $user->id,
+                type: 'deposit',
+                amount: $bonus,
+                comment: 'Вступительный бонус'
+            );
+            $this->reply("🎉 Вам начислен вступительный бонус {$bonus} у.е.!");
+        } catch (\Exception $e) {
+            Log::error('Ошибка начисления бонуса', [
+                'user_id' => $user->id,
+                'error'   => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /*******************************************************************************************/
 
     public function hello()
     {
         $this->reply('Привет!');
-    }
-
-    protected function onAction(string $action): void
-    {
-        match ($action) {
-            'myvpn'       => $this->myvpn(),
-            'checkbalance' => $this->checkbalance(),
-            'addbalance'  => $this->addbalance(),
-            default       => $this->reply('Неизвестное действие'),
-        };
-    }
-
-    public function menu(): void
-    {
-        $this->chat->message('Выберите действие')
-            ->keyboard(
-                Keyboard::make()
-                    ->row([
-                        Button::make('myvpn')->action('myvpn'),
-                        Button::make('checkbalance')->action('checkbalance'),
-                    ])
-                    ->row([
-                        Button::make('Кнопка 3')->url('https://gatekeeper.xab.su/help'),
-                        Button::make('addbalance')->action('addbalance'),
-                    ])
-            )
-            ->send();
     }
 
     public function myvpn(): void
@@ -151,17 +173,12 @@ class Handler extends WebhookHandler
 
     public function checkbalance(): void
     {
-        $this->reply('Нажата Кнопка checkbalance');
+        Telegraph::message('Что-то тут с переменными проблемы')->send();
     }
 
     public function addbalance(): void
     {
-
-        $telegramUser = $this->message->from();
-        //$user_id = User::getIdByTelegramId($telegramUser->id());
-        $user_id = $telegramUser->id();
-
-        $this->reply("Нажата Кнопка {$user_id} addbalance");
+        $this->reply("Нажата Кнопка addbalance");
     }
 
     public function x()
@@ -176,19 +193,19 @@ class Handler extends WebhookHandler
         $this->reply("VPN Клиентов: {$count_clients} ");
     }
 
-    public function yl()
+    public function myClients()
     {
         $clients = $this->user_clients();   // это уже массив вида
         // [['s'=>'x.xab.su','n'=>'pups','p'=>'azlk2140'], …]
 
         if (empty($clients)) {
-            $this->reply('У вас пока нет VPN-клиентов.');
+            $this->reply('У вас пока нет VPN-каналов.');
             return;
         }
 
         $lines = collect($clients)->map(
             fn($c, $idx) => sprintf(
-                "🔑 VPN Клиент #%d\nСервер: %s\nЛогин: %s\nПароль: %s\n",
+                "🔑 VPN Канал #%d\nСервер: %s\nЛогин: %s\nПароль: %s\n",
                 $idx + 1,
                 $c['s'],
                 $c['n'],
@@ -199,10 +216,18 @@ class Handler extends WebhookHandler
         $this->reply($lines);
     }
 
-    public function z()
+    public function balance()
     {
-        $user_balance = $this->user_balance();
-        $this->reply("Твой баланс: {$user_balance} ");
+        $user_balance = $this->getBalance();
+        $this->reply("Ваш баланс: {$user_balance} у.е.");
+    }
+
+    public function createCanal()
+    {
+        $r = $this->creatOneRandClient();
+
+        Telegraph::message($r)->send();
+
     }
 
     protected function user_id()
@@ -211,7 +236,7 @@ class Handler extends WebhookHandler
         return User::getIdByTelegramId($telegramUser->id());
     }
 
-    protected function user_balance()
+    protected function getBalance()
     {
         $telegramUser = $this->message->from();
         return User::getBalanceByTelegramId($telegramUser->id());
@@ -242,5 +267,16 @@ class Handler extends WebhookHandler
         ]);
 
         return $clients;
+    }
+
+    protected function creatOneRandClient()
+    {
+
+
+        $user_id = $this->user_id();
+        $v = User::creatOneClientFromTelegram($user_id);
+
+        return $v;
+
     }
 }

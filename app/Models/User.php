@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Services\BinderService;
+use App\Services\VpnService;
 use Orchid\Filters\Types\Like;
 use Orchid\Filters\Types\Where;
 use Orchid\Filters\Types\WhereDateStartEnd;
@@ -127,6 +128,23 @@ class User extends Authenticatable
     public function clients()
     {
         return $this->hasMany(Client::class);
+    }
+
+    public static function creatOneClientFromTelegram($user_id)
+    {
+        $vpn = new VpnService();
+        $user = self::find($user_id);
+
+        $vpn->createClient(
+            $user->telegram_username,
+            $user->telegram_id,
+            $user_id,
+            $user->telegram_username,
+            true
+        );
+
+        return 'true';
+
     }
 
     public function balance()
