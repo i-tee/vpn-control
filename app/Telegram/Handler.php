@@ -159,7 +159,7 @@ class Handler extends WebhookHandler
             ->keyboard(
                 Keyboard::make()
                     ->row([
-                        Button::make('Apple')
+                        Button::make('Apple(iOS)')
                             ->action('instructions_apple'),
                         Button::make('Android')
                             ->action('instructions_adroid'),
@@ -181,6 +181,21 @@ class Handler extends WebhookHandler
     public function instructions_apple(): void
     {
         $this->chat->message(config('bot.text.instructions.apple'))->send();
+    }
+
+    public function instructions_adroid(): void
+    {
+        $this->chat->message(config('bot.text.instructions.android'))->send();
+    }
+
+    public function instructions_windows(): void
+    {
+        $this->chat->message(config('bot.text.instructions.windows'))->send();
+    }
+
+    public function instructions_mac(): void
+    {
+        $this->chat->message(config('bot.text.instructions.mac'))->send();
     }
 
     public function addbalance(): void
