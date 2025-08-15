@@ -4,21 +4,21 @@ namespace App\Telegram;
 
 use DefStudio\Telegraph\Handlers\WebhookHandler;
 use App\Models\User;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
-use Orchid\Platform\Models\Role;
-use App\Models\Transaction;
 use DefStudio\Telegraph\Keyboard\Keyboard;
 use DefStudio\Telegraph\Keyboard\Button;
 use DefStudio\Telegraph\Facades\Telegraph;
+use Illuminate\Support\Facades\Log;
+use Orchid\Platform\Models\Role;
+use App\Models\Transaction;
 
 class Handler extends WebhookHandler
 {
-
+    /* ------------------------- 1. Точка входа (/start) ------------------------- */
     public function start(): void
     {
         $from = $this->message->from();
 
+        // Ботам — вход запрещён
         if ($from->isBot()) {
             $this->reply(__('Боты не могут регистрироваться.'));
             return;
@@ -27,25 +27,20 @@ class Handler extends WebhookHandler
         $user = User::where('telegram_id', $from->id())->first();
 
         if ($user) {
-            // Уже был
+            // Пользователь уже есть в базе
             $this->greetExisting($from);
         } else {
-            // Первый раз
+            // Новый пользователь
             $user = $this->registerUser($from);
             $this->greetNewcomer($from);
             $this->awardBonus($user);
         }
     }
 
-    /**
-     * Summary of greetNewcomer
-     * @param \DefStudio\Telegraph\DTO\User $from
-     * @return void
-     * Отправляет приветственное сообщение новому пользователю.
-     */
+    /* ------------------------- 2. Приветствие нового пользователя ------------------------- */
     private function greetNewcomer(\DefStudio\Telegraph\DTO\User $from): void
     {
-        $d = ceil(config('vpn.entry_bonus') / config('vpn.default_price')); // Количество дней бесплатного доступа
+        $d = ceil(config('vpn.entry_bonus') / config('vpn.default_price')); // дней бесплатно
 
         $this->chat->message(
             "👋 Привет, {$from->firstName()}!\n" . config('bot.text.welcome') . "\n\n{$d} дней бесплатно"
@@ -54,13 +49,14 @@ class Handler extends WebhookHandler
                 Keyboard::make()
                     ->row([Button::make(config('bot.text.creat'))->action('createCanal')])
                     ->row([
-                        Button::make(config('bot.button.instruction'))->url(config('bot.link.instruction')),
+                        Button::make(config('bot.button.instruction'))->action('instructionsGagets'),
                         Button::make(config('bot.button.support'))->url(config('bot.link.support'))
                     ])
             )
             ->send();
     }
 
+    /* ------------------------- 3. Регистрация нового пользователя ------------------------- */
     private function registerUser(\DefStudio\Telegraph\DTO\User $from): User
     {
         $server = config('vpn.default_server');
@@ -77,6 +73,7 @@ class Handler extends WebhookHandler
             'password'            => bcrypt((string)$from->id()),
         ]);
 
+        // Привязываем роль "consumer"
         $role = Role::where('slug', 'consumer')->first();
         if ($role) {
             $user->roles()->attach($role->id);
@@ -85,42 +82,35 @@ class Handler extends WebhookHandler
         return $user;
     }
 
-    /**
-     * Summary of greetExisting
-     * @param \DefStudio\Telegraph\DTO\User $from
-     * @return void
-     * Отправляет приветственное сообщение существующему пользователю.
-     */
+    /* ------------------------- 4. Приветствие существующего пользователя ------------------------- */
     private function greetExisting(\DefStudio\Telegraph\DTO\User $from): void
     {
-
         $rows = [];
 
-        // первая строка – кнопка «Создать», если нужно
+        // 1-я строка: «Создать» или «Мой канал»
         $firstRow = [];
         if ($this->user_clients_count() >= 1) {
             $firstRow[] = Button::make(config('bot.text.myclients'))->action('myClients');
         } else {
             $firstRow[] = Button::make(config('bot.text.creat'))->action('createCanal');
         }
-        // если массив не пустой – добавляем строку
         if ($firstRow) {
             $rows[] = $firstRow;
         }
 
-        // вторая строка – всегда
+        // 2-я строка: ссылки на инструкцию и поддержку
         $rows[] = [
-            Button::make(config('bot.button.instruction'))->url(config('bot.link.instruction')),
+            Button::make(config('bot.button.instruction'))->action('instructionsGagets'),
             Button::make(config('bot.button.support'))->url(config('bot.link.support'))
         ];
 
-        // третья строка – всегда
+        // 3-я строка: баланс и пополнение
         $rows[] = [
             Button::make('Баланс')->action('showbalance'),
             Button::make('Пополнить')->action('addbalance')->param('uid', $this->message->from()->id()),
         ];
 
-        // строим клавиатуру
+        // Собираем клавиатуру и отправляем
         $keyboard = Keyboard::make();
         foreach ($rows as $row) {
             $keyboard = $keyboard->row($row);
@@ -131,13 +121,7 @@ class Handler extends WebhookHandler
             ->send();
     }
 
-    /**
-     * /
-     * @param \App\Models\User $user
-     * @return void
-     * Начисляет вступительный бонус пользователю.
-     * Бонус берется из конфигурации vpn.entry_bonus.
-     */
+    /* ------------------------- 5. Начисление вступительного бонуса ------------------------- */
     private function awardBonus(User $user): void
     {
         $bonus = config('vpn.entry_bonus');
@@ -157,79 +141,70 @@ class Handler extends WebhookHandler
         }
     }
 
-    /*******************************************************************************************/
-
-    public function hello()
-    {
-        $this->reply('Привет!');
-    }
-
-    public function myvpn(): void
-    {
-        try {
-            // 1. Make sure the method exists inside this class
-            $this->myClients();          // ← will throw if this method is missing
-        } catch (\Throwable $e) {
-            // 2. Log the real reason
-            Log::error('telegram_bot: myvpn action failed', [
-                'chat' => $this->chat->chat_id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-
-            // 3. Always send *something* back
-            $this->reply('Произошла ошибка. Попробуйте позже.');
-        }
-    }
-
+    /* ------------------------- 6. Action-методы (кнопки) ------------------------- */
     public function showbalance(): void
     {
         $user_balance = $this->getBalance();
         $this->chat->message(
-            "Ваш баланс: {$user_balance} у.е.
-            \nРасход: " . config('vpn.default_price') . " у.е./сутки\nЕщё дней: " . ceil($user_balance / config('vpn.default_price'))
+            "Ваш баланс: {$user_balance} у.е.\n" .
+                "Расход: " . config('vpn.default_price') . " у.е./сутки\n" .
+                "Ещё дней: " . ceil($user_balance / config('vpn.default_price'))
         )->send();
     }
 
-    public function addbalance(): void
+    //instructionsGagets
+    public function instructionsGagets(): void
     {
-
-        $telegramId = $this->data->get('uid');   // параметр из callback_data
-        $user       = User::where('telegram_id', $telegramId)->first();
-
-        $this->chat->message(config('bot.text.paynenttest') . $user->id)->send();
-    
-        // Здесь можно добавить логику для пополнения баланса, если она будет реализована
-    }
-
-    public function instructionRow(): void
-    {
-        $this->chat->message('Настрой за 1 минуту!')   // <-- обязательно
+        $this->chat->message('Настрой за 1 минуту!')
             ->keyboard(
                 Keyboard::make()
                     ->row([
-                        Button::make(config('bot.button.instruction'))
-                            ->url(config('bot.link.instruction')),
-                        Button::make(config('bot.button.support'))
+                        Button::make('Apple')
+                            ->action('instructions_apple'),
+                        Button::make('Android')
+                            ->action('instructions_adroid'),
+                        Button::make('Windows')
+                            ->action('instructions_windows')
+                    ])
+                    ->row([
+                        Button::make('Mac')
+                            ->action('instructions_mac'),
+                        Button::make('Linux')
+                            ->url(config('bot.link.support')),
+                        Button::make('Роутер')
                             ->url(config('bot.link.support'))
                     ])
             )
             ->send();
     }
 
-    public function youid()
+    public function instructions_apple(): void
     {
-        $user_id = $this->user_id();
-        $this->reply("Ваш id: {$user_id} ");
+        $this->chat->message(config('bot.text.instructions.apple'))->send();
     }
 
-    public function y()
+    public function addbalance(): void
     {
-        $count_clients = $this->user_clients_count();
-        $this->reply("VPN Клиентов: {$count_clients} ");
+        // Получаем telegram-id из callback-параметра
+        $telegramId = $this->data->get('uid');
+        $user       = User::where('telegram_id', $telegramId)->first();
+
+        // Отправляем текст-заглушку
+        $this->chat->message(config('bot.text.paynenttest') . $user->id)->send();
     }
 
-    public function myClients()
+    public function createCanal(): void
+    {
+        if ($this->creatOneRandClient()) {
+            $this->reply(config('bot.text.clientcreated'));
+            $this->myClients();      // показываем список каналов
+            $this->instructionRow(); // инструкция по настройке
+        } else {
+            $this->reply(config('bot.text.clientcreaterror'));
+        }
+    }
+
+    public function myClients(): void
     {
         $clients = $this->user_clients();
 
@@ -242,75 +217,88 @@ class Handler extends WebhookHandler
             fn($c, $idx) => sprintf(
                 "🔑 VPN Канал #%d\nСервер: %s\nЛогин: <code>%s</code>\nПароль: <code>%s</code>",
                 $idx + 1,
-                e($c['s']),   // экранируем спецсимволы
+                e($c['s']),
                 e($c['n']),
                 e($c['p'])
             )
         )->implode("\n\n");
 
-        // Отправляем с parse_mode='HTML', чтобы <code> работал
         $this->chat->html($lines)->send();
     }
 
-    public function balance()
+    /* ------------------------- 7. Вспомогательные методы ------------------------- */
+    protected function user_id(): int
     {
-        $user_balance = $this->getBalance();
-        $this->reply("Ваш баланс: {$user_balance} у.е.");
-    }
-
-    public function createCanal()
-    {
-        if ($this->creatOneRandClient()) {
-            $this->reply(config('bot.text.clientcreated'));
-            $this->myClients(); // Показываем список клиентов после создания
-            $this->instructionRow(); // Отправляем инструкцию
-        } else {
-            $this->reply(config('bot.text.clientcreaterror'));
-        }
-    }
-
-    protected function user_id()
-    {
-        //$telegramUser = $this->message->from();
         return User::getIdByTelegramId($this->chat->chat_id);
     }
 
-    protected function getBalance()
+    protected function getBalance(): float
     {
-        //$telegramUser = $this->message->from();
         return User::getBalanceByTelegramId($this->chat->chat_id);
     }
 
-    protected function user_clients_count()
+    protected function user_clients_count(): int
     {
-        //$telegramUser = $this->message->from();
         return User::getClientsCountByTelegramId($this->chat->chat_id);
     }
 
-    protected function user_clients()
+    protected function user_clients(): array
     {
-
-        // Log::debug('telegram_bot:' . ' -> Start');
-
-        // $telegramUser = $this->message->from();
-
-        // Правильный вариант с использованием массива данных
-        // Log::debug('telegram_bot /// telegramUser: {user_id}', [
-        //     'user_id' => $this->chat->chat_id
-        // ]);
-
-        $clients = User::getClientsByTelegramId($this->chat->chat_id);
-
-        // Log::debug('telegram_bot: -> COLIO {clients}', [
-        //     'clients' => $clients
-        // ]);
-
-        return $clients;
+        return User::getClientsByTelegramId($this->chat->chat_id);
     }
 
-    protected function creatOneRandClient()
+    protected function creatOneRandClient(): bool
     {
-        $user_id = $this->user_id();
-        return User::creatOneClientFromTelegram($user_id);
+        return User::creatOneClientFromTelegram($this->user_id());
     }
+
+    /* ------------------------- 8. Неиспользуемые методы (закомментированы) ------------------------- */
+    // public function hello(): void
+    // {
+    //     $this->reply('Привет!');
+    // }
+
+    // public function myvpn(): void
+    // {
+    //     try {
+    //         $this->myClients();
+    //     } catch (\Throwable $e) {
+    //         Log::error('myvpn action failed', [
+    //             'chat'  => $this->chat->chat_id,
+    //             'error' => $e->getMessage(),
+    //         ]);
+    //         $this->reply('Произошла ошибка. Попробуйте позже.');
+    //     }
+    // }
+
+    // public function balance(): void
+    // {
+    //     $user_balance = $this->getBalance();
+    //     $this->reply("Ваш баланс: {$user_balance} у.е.");
+    // }
+
+    // public function instructionRow(): void
+    // {
+    //     $this->chat->message('Настрой за 1 минуту!')
+    //         ->keyboard(
+    //             Keyboard::make()
+    //                 ->row([
+    //                     Button::make(config('bot.button.instruction'))
+    //                         ->url(config('bot.link.instruction')),
+    //                     Button::make(config('bot.button.support'))
+    //                         ->url(config('bot.link.support'))
+    //                 ])
+    //         )
+    //         ->send();
+    // }
+
+    // public function youid(): void
+    // {
+    //     $this->reply('Ваш id: ' . $this->user_id());
+    // }
+
+    // public function y(): void
+    // {
+    //     $this->reply('VPN Клиентов: ' . $this->user_clients_count());
+    // }
 }
