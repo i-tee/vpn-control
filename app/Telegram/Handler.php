@@ -219,6 +219,12 @@ class Handler extends WebhookHandler
         }
     }
 
+    public function welcome(){
+
+         $this->chat->message(config('bot.text.welcome'))->send();
+
+    }
+
     public function myClients(): void
     {
         $clients = $this->user_clients();
