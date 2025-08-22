@@ -7,7 +7,7 @@ Route::get('/', function () {
 });
 
 Route::get('/help', function () {
-    return view('help.main');
+    return redirect()->temporary('https://www.perplexity.ai/search/kak-podkliuchitsia-k-vpn-ikev2-YrwMxnZzS32m4UlGTh4D6g');
 });
 
 
@@ -34,7 +34,7 @@ Route::prefix('vpn-test')->group(function () {
 
     // Добавить пользователя
     Route::post('/add', [VpnTestController::class, 'addUser'])->name('vpn.add');
-    
+
     // Удалить пользователя
     Route::post('/remove', [VpnTestController::class, 'removeUser'])->name('vpn.remove');
 });
