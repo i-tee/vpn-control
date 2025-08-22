@@ -7,9 +7,8 @@ Route::get('/', function () {
 });
 
 Route::get('/help', function () {
-    return redirect()->temporary('https://www.perplexity.ai/search/kak-podkliuchitsia-k-vpn-ikev2-YrwMxnZzS32m4UlGTh4D6g');
+    return redirect('https://www.perplexity.ai/search/kak-podkliuchitsia-k-vpn-ikev2-YrwMxnZzS32m4UlGTh4D6g');
 });
-
 
 /*
 
