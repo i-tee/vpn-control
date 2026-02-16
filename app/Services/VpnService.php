@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Client;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -127,7 +128,7 @@ class VpnService
 
     public function addUser(string $username, string $password): void
     {
-        \Log::debug("Adding user to server: {$this->serverName}", [
+        Log::debug("Adding user to server: {$this->serverName}", [
             'baseUrl' => $this->baseUrl,
             'server' => $this->serverName
         ]);
@@ -150,14 +151,14 @@ class VpnService
         $url = "{$this->baseUrl}/{$endpoint}";
         $payload = array_merge(['key' => $this->secretKey], $data);
 
-        \Log::debug('📤 VPN: Отправка запроса', compact('url', 'payload'));
+        Log::debug('📤 VPN: Отправка запроса', compact('url', 'payload'));
 
         try {
             $response = Http::withHeaders(['Content-Type' => 'application/json'])
                 ->timeout(10)
                 ->post($url, $payload);
 
-            \Log::debug('📥 VPN: Получен ответ', [
+            Log::debug('📥 VPN: Получен ответ', [
                 'status' => $response->status(),
                 'body' => $response->body(),
                 'successful' => $response->successful(),
@@ -179,13 +180,13 @@ class VpnService
 
             if ($result['status'] === 'error') {
                 $msg = $result['message'] ?? 'Unknown error';
-                \Log::error('❌ API вернул ошибку', ['message' => $msg]);
+                Log::error('❌ API вернул ошибку', ['message' => $msg]);
                 throw new \RuntimeException($msg);
             }
 
             return $result['users'] ?? null;
         } catch (\Exception $e) {
-            \Log::error('💥 Ошибка в VPN-запросе', [
+            Log::error('💥 Ошибка в VPN-запросе', [
                 'endpoint' => $endpoint,
                 'payload' => $payload,
                 'error' => $e->getMessage(),
