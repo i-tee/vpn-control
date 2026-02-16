@@ -298,20 +298,20 @@ class Handler extends WebhookHandler
     //     $this->reply("Ваш баланс: {$user_balance} у.е.");
     // }
 
-    // public function instructionRow(): void
-    // {
-    //     $this->chat->message('Настрой за 1 минуту!')
-    //         ->keyboard(
-    //             Keyboard::make()
-    //                 ->row([
-    //                     Button::make(config('bot.button.instruction'))
-    //                         ->url(config('bot.link.instruction')),
-    //                     Button::make(config('bot.button.support'))
-    //                         ->url(config('bot.link.support'))
-    //                 ])
-    //         )
-    //         ->send();
-    // }
+    public function instructionRow(): void
+    {
+        $this->chat->message('Настрой за 1 минуту!')
+            ->keyboard(
+                Keyboard::make()
+                    ->row([
+                        Button::make(config('bot.button.instruction'))
+                            ->url(config('bot.link.instruction')),
+                        Button::make(config('bot.button.support'))
+                            ->url(config('bot.link.support'))
+                    ])
+            )
+            ->send();
+    }
 
     // public function youid(): void
     // {
