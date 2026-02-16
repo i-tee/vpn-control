@@ -1,36 +1,49 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  # Контейнер с приложением (PHP + Laravel)
-  app:
-    build: .
-    container_name: vpn-control-app
-    restart: unless-stopped
-    working_dir: /var/www/html
-    volumes:
-      - ./:/var/www/html
-      - ./storage:/var/www/html/storage
-      - ./bootstrap/cache:/var/www/html/bootstrap/cache
-    depends_on:
-      - redis
+    # Контейнер с приложением (PHP + Laravel)
+    app:
+        build: .
+        container_name: gatekeeper-app
+        restart: unless-stopped
+        working_dir: /var/www/html
+        volumes:
+            - ./:/var/www/html
+            - ./storage:/var/www/html/storage
+            - ./bootstrap/cache:/var/www/html/bootstrap/cache
+        depends_on:
+            - redis
 
-  # Контейнер с веб-сервером Nginx
-  web:
-    image: nginx:alpine
-    container_name: vpn-control-nginx
-    restart: unless-stopped
-    ports:
-      - "8080:80"
-    volumes:
-      - ./:/var/www/html
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
-    depends_on:
-      - app
+    # Контейнер с веб-сервером Nginx
+    web:
+        image: nginx:alpine
+        container_name: gatekeeper-nginx
+        restart: unless-stopped
+        ports:
+            - "8080:80"
+        volumes:
+            - ./:/var/www/html
+            - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+        depends_on:
+            - app
 
-  # Контейнер с Redis
-  redis:
-    image: redis:alpine
-    container_name: vpn-control-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # Контейнер с Redis
+    redis:
+        image: redis:alpine
+        container_name: gatekeeper-redis
+        restart: unless-stopped
+        ports:
+            - "6379:6379"
+
+    # 📧 Контейнер для тестирования почты (Mailpit)
+    mailpit:
+        image: axllent/mailpit:latest
+        container_name: gatekeeper-mailpit
+        restart: unless-stopped
+        ports:
+            - "8025:8025" # Веб-интерфейс Mailpit (http://localhost:8025)
+            - "1025:1025" # SMTP порт (уже указан в .env)
+        environment:
+            MP_SMTP_AUTH_ACCEPT_ANY: "true" # Принимать любой логин/пароль
+            MP_SMTP_AUTH_ALLOW_INSECURE: "true" # Без шифрования (для локалки)
+            MP_UI_MESSAGE_VIEWER: "true" # Показывать HTML-версию писем
