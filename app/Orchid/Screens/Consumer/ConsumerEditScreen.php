@@ -3,23 +3,24 @@
 namespace App\Orchid\Screens\Consumer;
 
 use App\Models\Client;
+use App\Models\Transaction;
 use App\Models\User;
 use App\Services\VpnService;
 use Orchid\Platform\Models\Role;
 use Illuminate\Http\Request;
 use Orchid\Screen\Fields\Input;
 use Orchid\Screen\Fields\Password;
+use Orchid\Screen\Fields\Select;
+use Orchid\Screen\Fields\TextArea;
 use Orchid\Screen\Screen;
 use Orchid\Support\Facades\Layout;
 use Orchid\Screen\Actions\Button;
+use Orchid\Screen\Actions\ModalToggle;
 use Orchid\Screen\TD;
 use Orchid\Support\Facades\Toast;
 
 class ConsumerEditScreen extends Screen
 {
-    /**
-     * @var User|null
-     */
     public ?User $user = null;
 
     public function query($id): iterable
@@ -34,6 +35,7 @@ class ConsumerEditScreen extends Screen
         return [
             'user'    => $this->user,
             'clients' => $clients,
+            'balance' => $this->user->balance(), // передаём баланс для использования
         ];
     }
 
@@ -44,17 +46,27 @@ class ConsumerEditScreen extends Screen
 
     public function description(): ?string
     {
-        return 'Manage consumer in the system';
+        // Отображаем баланс прямо в описании
+        return 'Manage consumer. Current balance: ₽ ' . number_format($this->user->balance(), 2);
     }
 
     public function commandBar(): iterable
     {
         return [
+            // Кнопка открытия модального окна для создания транзакции
+            ModalToggle::make('Add Transaction')
+                ->modal('createTransactionModal')
+                ->method('createTransaction')
+                ->icon('plus')
+                ->className('btn btn-success'),
+
+            // Кнопка сохранения изменений пользователя
             Button::make('Save')
                 ->icon('check')
                 ->method('save')
                 ->post()
                 ->noAjax()
+                ->className('btn btn-primary'),
         ];
     }
 
@@ -91,29 +103,58 @@ class ConsumerEditScreen extends Screen
                 TD::make('server_name', 'Server')->sort(),
                 TD::make('is_active', 'Status')
                     ->sort()
-                    ->render(
-                        fn(Client $client) => $client->is_active
-                            ? '<span class="badge bg-success">Active</span>'
-                            : '<span class="badge bg-danger">Inactive</span>'
+                    ->render(fn (Client $client) => $client->is_active
+                        ? '<span class="badge bg-success">Active</span>'
+                        : '<span class="badge bg-danger">Inactive</span>'
                     ),
                 TD::make('actions', 'Actions')
                     ->align(TD::ALIGN_CENTER)
                     ->render(function (Client $client) {
                         return
                             Button::make('Swap Status')
-                            ->icon('recycle')
-                            ->confirm("Swap status for '{$client->name}'?")
-                            ->method('swapClient')
-                            ->parameters(['client_id' => $client->id])
-                            ->className('btn btn-warning btn-sm me-1') .
+                                ->icon('recycle')
+                                ->confirm("Swap status for '{$client->name}'?")
+                                ->method('swapClient')
+                                ->parameters(['client_id' => $client->id])
+                                ->className('btn btn-warning btn-sm me-1') .
                             Button::make('Delete')
-                            ->icon('trash')
-                            ->confirm("Delete client '{$client->name}'?")
-                            ->method('deleteClient')
-                            ->parameters(['client_id' => $client->id])
-                            ->className('btn btn-danger btn-sm');
+                                ->icon('trash')
+                                ->confirm("Delete client '{$client->name}'?")
+                                ->method('deleteClient')
+                                ->parameters(['client_id' => $client->id])
+                                ->className('btn btn-danger btn-sm');
                     }),
             ])->title('Clients of this consumer'),
+
+            // Модальное окно для создания транзакции
+            Layout::modal('createTransactionModal', [
+                Layout::rows([
+                    // ID пользователя передаётся скрытым полем
+                    Input::make('transaction.user_id')
+                        ->type('hidden')
+                        ->value($this->user->id),
+
+                    Select::make('transaction.type')
+                        ->options([
+                            'deposit'  => 'Deposit',
+                            'withdraw' => 'Withdraw',
+                        ])
+                        ->title('Type')
+                        ->required(),
+
+                    Input::make('transaction.amount')
+                        ->type('number')
+                        ->step('0.01')
+                        ->title('Amount')
+                        ->required(),
+
+                    TextArea::make('transaction.comment')
+                        ->title('Comment')
+                        ->rows(3),
+                ]),
+            ])->title('Create Transaction for ' . $this->user->name)
+              ->applyButton('Create')
+              ->closeButton('Cancel'),
         ];
     }
 
@@ -147,14 +188,11 @@ class ConsumerEditScreen extends Screen
         return redirect()->route('platform.consumers.list');
     }
 
-    /**
-     * Переключение статуса клиента (активен/неактивен)
-     */
     public function swapClient(Request $request)
     {
         $clientId = $request->input('client_id');
         $client = Client::findOrFail($clientId);
-        $userId = $client->user_id; // для редиректа
+        $userId = $client->user_id;
 
         try {
             $vpn = new VpnService($client->server_name);
@@ -173,9 +211,6 @@ class ConsumerEditScreen extends Screen
         return redirect()->route('platform.consumers.edit', $userId);
     }
 
-    /**
-     * Удаление клиента
-     */
     public function deleteClient(Request $request)
     {
         $clientId = $request->input('client_id');
@@ -193,5 +228,34 @@ class ConsumerEditScreen extends Screen
         }
 
         return redirect()->route('platform.consumers.edit', $userId);
+    }
+
+    /**
+     * Создание транзакции для текущего пользователя
+     */
+    public function createTransaction(Request $request)
+    {
+        $data = $request->validate([
+            'transaction.user_id' => 'required|exists:users,id',
+            'transaction.type'    => 'required|in:deposit,withdraw',
+            'transaction.amount'  => 'required|numeric|min:0',
+            'transaction.comment' => 'nullable|string',
+        ])['transaction'];
+
+        // Используем метод модели для создания транзакции
+        Transaction::createTransaction(
+            $data['user_id'],
+            $data['type'],
+            $data['amount'],
+            null, // subject_type
+            null, // subject_id
+            $data['comment'] ?? null,
+            true  // is_active
+        );
+
+        Toast::success('Transaction created successfully');
+
+        // Возвращаемся на страницу редактирования этого же пользователя
+        return redirect()->route('platform.consumers.edit', $data['user_id']);
     }
 }
