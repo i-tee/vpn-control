@@ -5,10 +5,15 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Orchid\Screen\AsSource;
+use Orchid\Filters\Types\Where;
+use Orchid\Filters\Types\WhereDateStartEnd;
+use Orchid\Filters\Types\Like;
+use Orchid\Filters\Filterable;
+
 
 class Transaction extends Model
 {
-    use HasFactory, AsSource;
+    use HasFactory, AsSource, Filterable;
 
     protected $fillable = [
         'user_id',
@@ -28,7 +33,20 @@ class Transaction extends Model
     protected $allowedSorts = [
         'id',
         'user_id',
+        'type',
+        'amount',
         'created_at',
+        'is_active',
+    ];
+
+    // Добавьте это для работы фильтров
+    protected $allowedFilters = [
+        'id'         => Where::class,
+        'user_id'    => Where::class,
+        'type'       => Like::class,
+        'amount'     => Where::class,
+        'is_active'  => Where::class,
+        'created_at' => WhereDateStartEnd::class,
     ];
 
     public function user()
@@ -72,7 +90,7 @@ class Transaction extends Model
             'comment' => $comment,
             'is_active' => $isActive,
         ], fn($value) => !is_null($value));
-        
+
         return $this->update($data);
     }
 
@@ -81,7 +99,7 @@ class Transaction extends Model
         if (!$this->is_active) {
             return false;
         }
-        
+
         return $this->update([
             'is_active' => false,
             'comment' => $this->comment ? $this->comment . ' | ' . $comment : $comment,
