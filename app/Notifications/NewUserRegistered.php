@@ -29,14 +29,19 @@ class NewUserRegistered extends Notification implements ShouldQueue
         // Получаем баланс через BinderService
         $balance = app(BinderService::class)->getUserBalance($this->user);
 
+        $telegramUsername = $this->user->telegram_username ?? null;
+        $telegramLink = $telegramUsername ? "https://t.me/{$telegramUsername}" : null;
+
         return (new MailMessage)
             ->subject('👤 Новый пользователь в GateKeeper')
             ->greeting('Здравствуйте!')
             ->line('Зарегистрирован новый пользователь:')
             ->line('**Имя:** ' . ($this->user->name ?? 'Не указано'))
-            ->line('**Email:** ' . ($this->user->email ?? 'Не указан'))
+            // ->line('**Email:** ' . ($this->user->email ?? 'Не указан'))
             ->line('**Telegram ID:** ' . $this->user->telegram_id)
+            ->line('**Telegram profile:** ' . ($telegramUsername ? "@{$telegramUsername}" : 'Не указано'))
+            ->line('**Telegram link:** ' . ($telegramLink ?? 'Не указано'))
             ->line('**Баланс:** ' . $balance . ' у.е.')
-            ->action('Перейти в админку', url('/admin/users/' . $this->user->id));
+            ->action('in Telegram', $telegramLink ?? url('/'));
     }
 }

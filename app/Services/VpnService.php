@@ -13,7 +13,7 @@ class VpnService
     protected string $secretKey;
     protected string $serverName;
 
-    public function __construct(string $serverName = null)
+    public function __construct(?string $serverName = null)
     {
         $this->initConfig($serverName ?? config('vpn.default_server'));
     }

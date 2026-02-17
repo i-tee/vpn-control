@@ -29,7 +29,7 @@ class NewDeposit extends Notification implements ShouldQueue
             ->line('Пользователь пополнил баланс:')
             ->line('**Пользователь:** ' . ($user->name ?? 'ID: ' . $this->transaction->user_id))
             ->line('**Сумма:** ' . $this->transaction->amount . ' у.е.')
-            ->line('**Новый баланс:** ' . ($user->getBalanceAttribute() ?? 'неизвестно') . ' у.е.')
-            ->action('Перейти к транзакции', url('/admin/transactions/' . $this->transaction->id));
+            ->line('**Комментарий:** ' . ($this->transaction->comment ?? 'Не указан'))
+            ->line('**Новый баланс:** ' . ($user->getBalanceAttribute() ?? 'неизвестно') . ' у.е.');
     }
 }

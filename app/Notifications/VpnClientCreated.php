@@ -22,6 +22,9 @@ class VpnClientCreated extends Notification implements ShouldQueue
     public function toMail($notifiable): MailMessage
     {
         $user = $this->client->user;
+        $telegramUsername = $user->telegram_username ?? null;
+        $telegramLink = $telegramUsername ? "https://t.me/{$telegramUsername}" : null;
+
         return (new MailMessage)
             ->subject('🔐 Создан новый VPN-клиент')
             ->greeting('Здравствуйте!')
@@ -30,6 +33,6 @@ class VpnClientCreated extends Notification implements ShouldQueue
             ->line('**Пользователь:** ' . ($user->name ?? 'ID: ' . $this->client->user_id))
             ->line('**Сервер:** ' . $this->client->server_name)
             ->line('**Статус:** ' . ($this->client->is_active ? 'Активен' : 'Неактивен'))
-            ->action('Посмотреть клиента', url('/admin/clients/' . $this->client->id));
+            ->action('in Telegram', $telegramLink ?? url('/'));
     }
 }

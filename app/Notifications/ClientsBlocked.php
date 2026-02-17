@@ -32,7 +32,10 @@ class ClientsBlocked extends Notification implements ShouldQueue
 
         foreach ($this->clients as $client) {
             $user = $client->user;
-            $mail->line("- **{$client->name}** (пользователь: " . ($user->name ?? $client->user_id) . ")");
+            $telegramUsername = $user->telegram_username ?? null;
+            $telegramLink = $telegramUsername ? "https://t.me/{$telegramUsername}" : null;
+            $mail->line("- **{$client->name}** (пользователь: " . ($user->name ?? $client->user_id) . ")" . ($telegramLink ? " [Telegram]({$telegramLink})" : ""));
+
         }
 
         $mail->line('Всего заблокировано: ' . $this->clients->count());
