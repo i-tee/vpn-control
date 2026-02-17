@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Orchid\Screens\Transaction;
 
 use App\Models\Transaction;
@@ -13,10 +14,10 @@ class TransactionListScreen extends Screen
     {
         $query = Transaction::query()
             ->with('user')
-            ->filters()  // Включаем встроенную систему фильтров Orchid
+            ->filters()
             ->defaultSort('created_at', 'desc')
             ->paginate(20);
-        
+
         return [
             'transactions' => $query,
         ];
@@ -47,29 +48,36 @@ class TransactionListScreen extends Screen
             Layout::table('transactions', [
                 TD::make('id', 'ID')
                     ->sort()
-                    ->render(fn ($transaction) =>
+                    ->render(
+                        fn($transaction) =>
                         Link::make($transaction->id)
                             ->route('platform.transactions.edit', $transaction->id)
                     ),
-                // Новая колонка с user_id и фильтром
-                TD::make('user_id', 'User ID')
+
+                // Колонка user_id с ID и именем пользователя
+                TD::make('user_id', 'ID : User')
                     ->sort()
-                    ->filter(TD::FILTER_TEXT),
-                TD::make('user.name', 'User')
-                    ->sort()
-                    ->render(fn ($transaction) => $transaction->user?->name ?? 'N/A'),
+                    ->filter(TD::FILTER_TEXT)
+                    ->render(
+                        fn($transaction) =>
+                        $transaction->user_id . ' : ' . ($transaction->user?->name ?? 'N/A')
+                    ),
+
                 TD::make('type', 'Type')
                     ->sort(),
+
                 TD::make('amount', 'Amount')
                     ->sort()
-                    ->render(fn ($transaction) => '₽ ' . number_format($transaction->amount, 2)),
+                    ->render(fn($transaction) => '₽ ' . number_format($transaction->amount, 2)),
+
                 TD::make('created_at', 'Date')
                     ->sort()
                     ->filter(TD::FILTER_DATE_RANGE)
-                    ->render(fn ($transaction) => $transaction->created_at->format('Y-m-d H:i')),
+                    ->render(fn($transaction) => $transaction->created_at->format('Y-m-d H:i')),
+
                 TD::make('is_active', 'Status')
                     ->sort()
-                    ->render(fn ($transaction) => $transaction->is_active ? 'Active' : 'Cancelled'),
+                    ->render(fn($transaction) => $transaction->is_active ? 'Active' : 'Cancelled'),
             ]),
         ];
     }
