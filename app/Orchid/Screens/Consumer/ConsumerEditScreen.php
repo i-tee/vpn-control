@@ -27,7 +27,6 @@ class ConsumerEditScreen extends Screen
     {
         $this->user = User::findOrFail($id);
 
-        // Получаем клиентов этого пользователя с пагинацией
         $clients = Client::where('user_id', $this->user->id)
             ->latest()
             ->paginate(10);
@@ -35,7 +34,7 @@ class ConsumerEditScreen extends Screen
         return [
             'user'    => $this->user,
             'clients' => $clients,
-            'balance' => $this->user->balance(), // передаём баланс для использования
+            'balance' => $this->user->balance(),
         ];
     }
 
@@ -46,21 +45,23 @@ class ConsumerEditScreen extends Screen
 
     public function description(): ?string
     {
-        // Отображаем баланс прямо в описании
-        return 'Manage consumer. Current balance: ₽ ' . number_format($this->user->balance(), 2);
+        $balance = number_format($this->user->balance(), 2);
+        // $clientsCount = $this->user->clients()->count();
+        // $warning = $clientsCount > 0 
+        //     ? " ⚠️ Has {$clientsCount} client(s) – delete them before removing consumer." 
+        //     : '';
+        return 'Manage consumer. Current balance: ₽ ' . $balance;
     }
 
     public function commandBar(): iterable
     {
-        return [
-            // Кнопка открытия модального окна для создания транзакции
+        $buttons = [
             ModalToggle::make('Add Transaction')
                 ->modal('createTransactionModal')
                 ->method('createTransaction')
                 ->icon('plus')
                 ->className('btn btn-success'),
 
-            // Кнопка сохранения изменений пользователя
             Button::make('Save')
                 ->icon('check')
                 ->method('save')
@@ -68,12 +69,23 @@ class ConsumerEditScreen extends Screen
                 ->noAjax()
                 ->className('btn btn-primary'),
         ];
+
+        // Кнопка удаления только для существующего пользователя
+        if ($this->user->exists) {
+            $buttons[] = Button::make('Delete Consumer')
+                ->icon('trash')
+                ->confirm('Are you sure you want to delete this consumer? This action cannot be undone.')
+                ->method('deleteConsumer')
+                ->parameters(['id' => $this->user->id])
+                ->className('btn btn-danger');
+        }
+
+        return $buttons;
     }
 
     public function layout(): iterable
     {
         return [
-            // Форма редактирования пользователя
             Layout::rows([
                 Input::make('user_id')
                     ->type('hidden')
@@ -95,7 +107,6 @@ class ConsumerEditScreen extends Screen
                     ->placeholder('Leave empty to keep current password'),
             ]),
 
-            // Таблица с клиентами потребителя
             Layout::table('clients', [
                 TD::make('id', 'ID')->sort(),
                 TD::make('name', 'Username')->sort(),
@@ -126,10 +137,8 @@ class ConsumerEditScreen extends Screen
                     }),
             ])->title('Clients of this consumer'),
 
-            // Модальное окно для создания транзакции
             Layout::modal('createTransactionModal', [
                 Layout::rows([
-                    // ID пользователя передаётся скрытым полем
                     Input::make('transaction.user_id')
                         ->type('hidden')
                         ->value($this->user->id),
@@ -178,7 +187,6 @@ class ConsumerEditScreen extends Screen
 
         $this->user->save();
 
-        // Убедимся, что у пользователя есть роль consumer
         $consumerRole = Role::where('slug', 'consumer')->first();
         if ($consumerRole && !$this->user->roles->contains($consumerRole)) {
             $this->user->roles()->attach($consumerRole);
@@ -230,9 +238,6 @@ class ConsumerEditScreen extends Screen
         return redirect()->route('platform.consumers.edit', $userId);
     }
 
-    /**
-     * Создание транзакции для текущего пользователя
-     */
     public function createTransaction(Request $request)
     {
         $data = $request->validate([
@@ -242,20 +247,36 @@ class ConsumerEditScreen extends Screen
             'transaction.comment' => 'nullable|string',
         ])['transaction'];
 
-        // Используем метод модели для создания транзакции
         Transaction::createTransaction(
             $data['user_id'],
             $data['type'],
             $data['amount'],
-            null, // subject_type
-            null, // subject_id
+            null,
+            null,
             $data['comment'] ?? null,
-            true  // is_active
+            true
         );
 
         Toast::success('Transaction created successfully');
-
-        // Возвращаемся на страницу редактирования этого же пользователя
         return redirect()->route('platform.consumers.edit', $data['user_id']);
+    }
+
+    public function deleteConsumer(Request $request)
+    {
+        $userId = $request->input('id');
+        $user = User::findOrFail($userId);
+
+        // Проверяем наличие клиентов
+        $clientsCount = $user->clients()->count();
+        if ($clientsCount > 0) {
+            Toast::error("Cannot delete consumer: they still have {$clientsCount} client(s). Please delete all clients first.");
+            return redirect()->route('platform.consumers.edit', $userId);
+        }
+
+        // Удаляем пользователя (каскадное удаление транзакций, ролей должно быть настроено в модели или миграции)
+        $user->delete();
+
+        Toast::success('Consumer deleted successfully');
+        return redirect()->route('platform.consumers.list');
     }
 }
