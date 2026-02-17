@@ -15,7 +15,7 @@ class ConsumerListScreen extends Screen
      * @var BinderService
      */
     protected $binderService;
-    
+
     public function __construct(BinderService $binderService)
     {
         $this->binderService = $binderService;
@@ -23,9 +23,14 @@ class ConsumerListScreen extends Screen
 
     public function query(): array
     {
-        // Получаем данные ТОЛЬКО через сервис с пагинацией
-        $users = $this->binderService->getConsumerListData();
-        
+        // Получаем пользователей с ролью consumer
+        $users = User::whereHas('roles', fn($q) => $q->where('slug', 'consumer'))
+            ->withCount('clients as vpn_clients_count')
+            ->withBalance() // наш скоуп
+            ->filters()
+            ->defaultSort('id')
+            ->paginate(15);
+
         return [
             'users' => $users,
         ];
@@ -56,34 +61,37 @@ class ConsumerListScreen extends Screen
             Layout::table('users', [
                 TD::make('id', 'ID')
                     ->sort()
-                    ->render(fn ($user) => 
+                    ->render(
+                        fn($user) =>
                         Link::make($user->id)
                             ->route('platform.consumers.edit', $user->id)
                     ),
-                
+
                 TD::make('name', 'Name')
                     ->sort(),
-                
+
                 TD::make('email', 'Email')
                     ->sort(),
-                
+
                 // Колонка с количеством VPN клиентов
                 TD::make('vpn_clients_count', 'VPN Clients')
                     ->sort()
-                    ->render(fn ($user) => 
+                    ->render(
+                        fn($user) =>
                         $user->vpn_clients_count
                     ),
-                
+
                 // Колонка с балансом пользователя
                 TD::make('balance', 'Balance')
                     ->sort()
-                    ->render(fn ($user) => 
+                    ->render(
+                        fn($user) =>
                         '₽ ' . number_format($user->balance, 2)
                     ),
-                
+
                 TD::make('created_at', 'Date')
                     ->sort()
-                    ->render(fn ($user) => $user->created_at->format('Y-m-d H:i')),
+                    ->render(fn($user) => $user->created_at->format('Y-m-d H:i')),
             ]),
         ];
     }

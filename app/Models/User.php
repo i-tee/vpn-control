@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Services\BinderService;
 use App\Services\VpnService;
+use Illuminate\Support\Facades\Log;
 use Orchid\Filters\Types\Like;
 use Orchid\Filters\Types\Where;
 use Orchid\Filters\Types\WhereDateStartEnd;
@@ -71,6 +72,8 @@ class User extends Authenticatable
         'email',
         'updated_at',
         'created_at',
+        'vpn_clients_count',
+        'balance',
     ];
 
     public static function getClientsCountByTelegramId($telegramId)
@@ -103,7 +106,7 @@ class User extends Authenticatable
             ];
         }
 
-        \Log::debug('telegram_bot: -> clients {clients}', [
+        Log::debug('telegram_bot: -> clients {clients}', [
             'clients' => $plain
         ]);
         return $plain;
@@ -147,7 +150,6 @@ class User extends Authenticatable
             return false; // Клиент с таким именем уже существует
         }
         return true;
-
     }
 
     public function balance()
@@ -156,5 +158,16 @@ class User extends Authenticatable
             ->where('is_active', true)
             ->selectRaw('SUM(CASE WHEN type = "deposit" THEN amount ELSE -amount END) as balance')
             ->value('balance') ?? 0;
+    }
+
+    // Подзапрос для получения баланса при выборке пользователей (используется в ConsumerListScreen)
+    public function scopeWithBalance($query)
+    {
+        return $query->addSelect([
+            'balance' => Transaction::selectRaw('SUM(CASE WHEN type = "deposit" THEN amount ELSE -amount END)')
+                ->whereColumn('user_id', 'users.id')
+                ->where('is_active', true)
+                ->limit(1)
+        ]);
     }
 }
