@@ -3,7 +3,6 @@
 namespace App\Orchid\Screens\Consumer;
 
 use App\Models\User;
-use App\Services\BinderService;
 use Orchid\Screen\Screen;
 use Orchid\Support\Facades\Layout;
 use Orchid\Screen\TD;
@@ -11,29 +10,16 @@ use Orchid\Screen\Actions\Link;
 
 class ConsumerListScreen extends Screen
 {
-    /**
-     * @var BinderService
-     */
-    protected $binderService;
-
-    public function __construct(BinderService $binderService)
-    {
-        $this->binderService = $binderService;
-    }
-
     public function query(): array
     {
-        // Получаем пользователей с ролью consumer
         $users = User::whereHas('roles', fn($q) => $q->where('slug', 'consumer'))
             ->withCount('clients as vpn_clients_count')
-            ->withBalance() // наш скоуп
-            ->filters()
+            ->withBalance()
+            ->filters() // автоматически применяет фильтры из allowedFilters
             ->defaultSort('id')
             ->paginate(15);
 
-        return [
-            'users' => $users,
-        ];
+        return ['users' => $users];
     }
 
     public function name(): ?string
@@ -43,7 +29,7 @@ class ConsumerListScreen extends Screen
 
     public function description(): ?string
     {
-        return 'List of all consumers in the system';
+        return 'List of all consumers in the system. Click on filter icons in the table headers to search.';
     }
 
     public function commandBar(): array
@@ -61,33 +47,23 @@ class ConsumerListScreen extends Screen
             Layout::table('users', [
                 TD::make('id', 'ID')
                     ->sort()
-                    ->render(
-                        fn($user) =>
-                        Link::make($user->id)
-                            ->route('platform.consumers.edit', $user->id)
-                    ),
+                    ->render(fn($user) => Link::make($user->id)
+                        ->route('platform.consumers.edit', $user->id)),
 
                 TD::make('name', 'Name')
-                    ->sort(),
+                    ->sort()
+                    ->filter(), // добавляет иконку фильтра
 
                 TD::make('email', 'Email')
+                    ->sort()
+                    ->filter(),
+
+                TD::make('vpn_clients_count', 'VPN Clients')
                     ->sort(),
 
-                // Колонка с количеством VPN клиентов
-                TD::make('vpn_clients_count', 'VPN Clients')
-                    ->sort()
-                    ->render(
-                        fn($user) =>
-                        $user->vpn_clients_count
-                    ),
-
-                // Колонка с балансом пользователя
                 TD::make('balance', 'Balance')
                     ->sort()
-                    ->render(
-                        fn($user) =>
-                        '₽ ' . number_format($user->balance, 2)
-                    ),
+                    ->render(fn($user) => '₽ ' . number_format($user->balance, 2)),
 
                 TD::make('created_at', 'Date')
                     ->sort()
