@@ -15,13 +15,20 @@ use Orchid\Screen\Fields\Input;
 use Orchid\Screen\Fields\Select;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
+use Orchid\Filters\Types\Where;
+use Orchid\Filters\Types\Like;
+use Orchid\Filters\Types\WhereDateStartEnd;
 
 class ClientScreen extends Screen
 {
     public function query(): array
     {
         return [
-            'clients' => Client::latest()->paginate()
+            'clients' => Client::query()
+                ->with('user')
+                ->filters()
+                ->defaultSort('created_at', 'desc')
+                ->paginate(),
         ];
     }
 
@@ -57,7 +64,7 @@ class ClientScreen extends Screen
             $owners = ['0' => 'No consumer users found'];
         }
 
-        // 🌐 Серверы: ключи (имена) как значения, IP — в скобках
+        // 🌐 Серверы: ключи (имена) как значения
         $servers = collect(config('vpn.servers'))
             ->mapWithKeys(fn($server, $key) => [
                 $key => "$key"
@@ -65,16 +72,34 @@ class ClientScreen extends Screen
             ->toArray();
 
         return [
-            // Таблица с клиентами — все поля
+            // Таблица с клиентами — все поля с фильтрами и сортировкой
             Layout::table('clients', [
-                TD::make('id', 'id'),
-                TD::make('name', 'Username'),
-                TD::make('password', 'Password'), // Пароль — просто текст
-                TD::make('user_id', 'Owner')
-                    ->render(fn(Client $client) => $client->user?->name ?? '—'),
-                TD::make('server_name', 'Server'),
-                //TD::make('telegram_nickname', 'Telegram'),
+                TD::make('id', 'ID')
+                    ->sort()
+                    ->filter(),
+
+                TD::make('name', 'Username')
+                    ->sort()
+                    ->filter(),
+
+                TD::make('password', 'Password')
+                    ->render(fn(Client $client) => $client->password),
+
+                // Owner: фильтр и сортировка по user_id, отображаем ID + имя
+                TD::make('user_id', 'ID : Owner')
+                    ->sort()
+                    ->filter()
+                    ->render(fn(Client $client) => 
+                        $client->user_id . ' : ' . ($client->user?->name ?? '—')
+                    ),
+
+                TD::make('server_name', 'Server')
+                    ->sort()
+                    ->filter(),
+
                 TD::make('created_at', 'Created')
+                    ->sort()
+                    ->filter(TD::FILTER_DATE_RANGE)
                     ->render(fn($client) => $client->created_at->format('d.m.Y H:i')),
 
                 TD::make('is_active', 'Status')
@@ -85,6 +110,7 @@ class ClientScreen extends Screen
                             ? '<span class="badge bg-success">Active</span>'
                             : '<span class="badge bg-danger">Inactive</span>'
                     ),
+
                 TD::make('swapstatus', 'Actions')
                     ->align(TD::ALIGN_CENTER)
                     ->render(
@@ -95,6 +121,7 @@ class ClientScreen extends Screen
                             ->method('swap', ['id' => $client->id])
                             ->className('btn btn-danger btn-sm')
                     ),
+
                 TD::make('actions', 'Actions')
                     ->align(TD::ALIGN_CENTER)
                     ->render(
@@ -104,7 +131,7 @@ class ClientScreen extends Screen
                             ->confirm("Delete client '{$client->name}'?")
                             ->method('delete', ['id' => $client->id])
                             ->className('btn btn-danger btn-sm')
-                    )
+                    ),
             ]),
 
             // Модальное окно: только создание
@@ -117,14 +144,13 @@ class ClientScreen extends Screen
 
                     Input::make('client.password')
                         ->title('Password')
-                        //->type('password')
                         ->placeholder('Enter password')
                         ->required(),
 
                     Select::make('client.user_id')
                         ->title('Owner')
                         ->options($owners)
-                        ->value(array_key_first($owners)) // первый по умолчанию
+                        ->value(array_key_first($owners))
                         ->required(),
 
                     Select::make('client.server_name')
@@ -132,10 +158,6 @@ class ClientScreen extends Screen
                         ->options($servers)
                         ->value(config('vpn.default_server'))
                         ->required(),
-
-                    // Input::make('client.telegram_nickname')
-                    //     ->title('Telegram')
-                    //     ->placeholder('@username'),
                 ]),
             ])->title('Create Client')
                 ->applyButton('Create')
@@ -155,16 +177,12 @@ class ClientScreen extends Screen
         $data = $request->input('client');
 
         try {
-            // Сначала создаем клиента в БД
             $client = Client::create($data);
-
-            // Затем инициализируем VpnService с ВЫБРАННЫМ сервером
-            $vpn = new VpnService($client->server_name); // Вот ключевое изменение!
+            $vpn = new VpnService($client->server_name);
             $vpn->addUser($client->name, $client->password);
 
             Toast::success("Client '{$client->name}' created on server {$client->server_name}");
         } catch (\Exception $e) {
-            // Удаляем клиента из БД, если не удалось добавить на VPN
             if (isset($client)) {
                 $client->delete();
             }
@@ -180,9 +198,7 @@ class ClientScreen extends Screen
         $name = $client->name;
 
         try {
-            // Создаем экземпляр VpnService с сервером из записи клиента
             $vpn = new VpnService($client->server_name);
-
             $vpn->removeUser($name);
             $client->delete();
 
@@ -197,23 +213,17 @@ class ClientScreen extends Screen
         $request->validate(['id' => 'required|exists:clients,id']);
 
         $client = Client::findOrFail($request->input('id'));
-        $name = $client->name;
 
         try {
-
-            // Создаем экземпляр VpnService с сервером из записи клиента
             $vpn = new VpnService($client->server_name);
 
             if ($client->is_active) {
-
                 $vpn->deactivateClient($client->id);
-
             } else {
-
                 $vpn->activateClient($client->id);
             }
 
-            Toast::success("Status now '{$client->is_active}'");
+            Toast::success("Status now '" . ($client->fresh()->is_active ? 'Active' : 'Inactive') . "'");
         } catch (\Exception $e) {
             Toast::error('Error: ' . $e->getMessage());
         }
