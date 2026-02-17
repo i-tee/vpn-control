@@ -67,6 +67,12 @@ class VpnService
             'is_active' => $activate
         ]);
 
+        // Отправка уведомления админу
+        if ($adminEmail = env('ADMIN_EMAIL')) {
+            \Illuminate\Support\Facades\Notification::route('mail', $adminEmail)
+                ->notify(new \App\Notifications\VpnClientCreated($client));
+        }
+
         if ($activate) {
             $this->addUser($username, $password);
         }

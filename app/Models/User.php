@@ -76,6 +76,11 @@ class User extends Authenticatable
         'balance',
     ];
 
+    public function getBalanceAttribute()
+    {
+        return app(BinderService::class)->getUserBalance($this);
+    }
+
     public static function getClientsCountByTelegramId($telegramId)
     {
         $user_id =  self::where('telegram_id', $telegramId)->value('id');

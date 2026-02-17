@@ -20,6 +20,11 @@ class TransactionObserver
             return;
         }
 
+        if ($transaction->type === 'deposit' && $adminEmail = env('ADMIN_EMAIL')) {
+            \Illuminate\Support\Facades\Notification::route('mail', $adminEmail)
+                ->notify(new \App\Notifications\NewDeposit($transaction));
+        }
+
         $this->checkBalanceAndManageClients($transaction->user_id);
     }
 
