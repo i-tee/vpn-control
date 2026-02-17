@@ -47,12 +47,13 @@ class ConsumerListScreen extends Screen
             Layout::table('users', [
                 TD::make('id', 'ID')
                     ->sort()
+                    ->filter()
                     ->render(fn($user) => Link::make($user->id)
                         ->route('platform.consumers.edit', $user->id)),
 
                 TD::make('name', 'Name')
                     ->sort()
-                    ->filter(), // добавляет иконку фильтра
+                    ->filter(),
 
                 TD::make('email', 'Email')
                     ->sort()

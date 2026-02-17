@@ -40,7 +40,7 @@ class ConsumerEditScreen extends Screen
 
     public function name(): ?string
     {
-        return $this->user->exists ? 'Edit Consumer' : 'Create Consumer';
+        return $this->user->exists ? 'Consumer [ID: ' . $this->user->id . '] '  . $this->user->name : 'Create Consumer';
     }
 
     public function description(): ?string
@@ -50,7 +50,7 @@ class ConsumerEditScreen extends Screen
         // $warning = $clientsCount > 0 
         //     ? " ⚠️ Has {$clientsCount} client(s) – delete them before removing consumer." 
         //     : '';
-        return 'Manage consumer. Current balance: ₽ ' . $balance;
+        return 'Current balance: ₽ ' . $balance;
     }
 
     public function commandBar(): iterable
