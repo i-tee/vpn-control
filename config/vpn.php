@@ -5,7 +5,7 @@ return [
         'x.xab.su' => [
             'host' => '5.129.226.167',
             'port' => 5000,
-            'secret_key' => 'azlk2140',
+            'secret_key' => env('VPN_SECRET_KEY', 'azlk2140'),
             'protocol' => 'http',
             'status' => 'active',
             'price' => 12, // Добавляем стоимость сервера (10 единиц за клиента в сутки)
