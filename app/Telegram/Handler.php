@@ -250,7 +250,19 @@ class Handler extends WebhookHandler
     public function welcome()
     {
 
-        $this->chat->message(config('bot.text.welcome'))->send();
+        $price = config('vpn.default_price', 12);
+        $bonus = config('vpn.entry_bonus', 360); // значение по умолчанию, если ключ отсутствует
+
+        $welcome = config('bot.text.welcome');
+
+        // Заменяем все плейсхолдеры сразу
+        $replacements = [
+            '{price}' => $price,
+            '{bonus}' => $bonus,
+        ];
+        $welcome = str_replace(array_keys($replacements), array_values($replacements), $welcome);
+
+        $this->chat->message($welcome)->send();
     }
 
     public function myClients(): void
