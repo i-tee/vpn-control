@@ -18,6 +18,15 @@ class VpnService
         $this->initConfig($serverName ?? config('vpn.default_server'));
     }
 
+    /**
+     * Определяет, нужно ли реально выполнять запросы к VPN-серверу.
+     * Только в production-окружении запросы выполняются.
+     */
+    protected function shouldExecute(): bool
+    {
+        return app()->environment('production');
+    }
+
     private function initConfig(string $serverName): void
     {
         $this->serverName = $serverName;
@@ -132,8 +141,17 @@ class VpnService
         $client->delete();
     }
 
+    // Метод addUser с защитой
     public function addUser(string $username, string $password): void
     {
+        if (!$this->shouldExecute()) {
+            Log::info("🔇 DEV mode: пропускаем добавление пользователя на VPN-сервер", [
+                'username' => $username,
+                'server' => $this->serverName
+            ]);
+            return; // Ничего не делаем, просто логируем
+        }
+
         Log::debug("Adding user to server: {$this->serverName}", [
             'baseUrl' => $this->baseUrl,
             'server' => $this->serverName
@@ -145,8 +163,17 @@ class VpnService
         ]);
     }
 
+    // Метод removeUser с защитой
     public function removeUser(string $username): void
     {
+        if (!$this->shouldExecute()) {
+            Log::info("🔇 DEV mode: пропускаем удаление пользователя с VPN-сервера", [
+                'username' => $username,
+                'server' => $this->serverName
+            ]);
+            return;
+        }
+
         $this->request('remove_user', [
             'username' => $username,
         ]);
