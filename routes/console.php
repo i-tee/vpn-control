@@ -10,5 +10,5 @@ Artisan::command('inspire', function () {
 use Illuminate\Support\Facades\Schedule;
 
 if (app()->environment('production')) {
-    Schedule::command('vpn:daily-charge')->dailyAt('12:23'); // +3h (15:23 MSK)
+    Schedule::command('vpn:daily-charge')->dailyAt('10:30'); // +3h (MSK)
 }
