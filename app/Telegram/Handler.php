@@ -37,6 +37,34 @@ class Handler extends WebhookHandler
         }
     }
 
+    public function balance(): void
+    {
+        $this->showbalance();
+    }
+
+    public function myvpn(): void
+    {
+        $this->myClients();
+    }
+
+    public function instructions(): void
+    {
+        $this->instructionsGagets();
+    }
+
+    public function support(): void
+    {
+        $this->chat->message(config('bot.text.needahelp'))
+            ->keyboard(
+                Keyboard::make()
+                    ->row([
+                        Button::make(config('bot.button.support'))
+                            ->url(config('bot.link.support'))
+                    ])
+            )
+            ->send();
+    }
+
     /* ------------------------- 2. Приветствие нового пользователя ------------------------- */
     private function greetNewcomer(\DefStudio\Telegraph\DTO\User $from): void
     {
@@ -219,10 +247,10 @@ class Handler extends WebhookHandler
         }
     }
 
-    public function welcome(){
+    public function welcome()
+    {
 
-         $this->chat->message(config('bot.text.welcome'))->send();
-
+        $this->chat->message(config('bot.text.welcome'))->send();
     }
 
     public function myClients(): void
@@ -304,10 +332,8 @@ class Handler extends WebhookHandler
             ->keyboard(
                 Keyboard::make()
                     ->row([
-                        Button::make(config('bot.button.instruction'))
-                            ->url(config('bot.link.instruction')),
-                        Button::make(config('bot.button.support'))
-                            ->url(config('bot.link.support'))
+                        Button::make(config('bot.button.instruction'))->action('instructionsGagets'),
+                        Button::make(config('bot.button.support'))->url(config('bot.link.support'))
                     ])
             )
             ->send();
