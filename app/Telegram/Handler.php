@@ -11,6 +11,9 @@ use Illuminate\Support\Facades\Log;
 use Orchid\Platform\Models\Role;
 use App\Models\Transaction;
 
+use DefStudio\Telegraph\DTO\PreCheckoutQuery;
+use DefStudio\Telegraph\DTO\SuccessfulPayment;
+
 class Handler extends WebhookHandler
 {
     /* ------------------------- 1. Точка входа (/start) ------------------------- */
@@ -226,16 +229,6 @@ class Handler extends WebhookHandler
         $this->chat->message(config('bot.text.instructions.mac'))->send();
     }
 
-    public function addbalance(): void
-    {
-        // Получаем telegram-id из callback-параметра
-        $telegramId = $this->data->get('uid');
-        $user       = User::where('telegram_id', $telegramId)->first();
-
-        // Отправляем текст-заглушку
-        $this->chat->message(config('bot.text.paynenttest') . $user->id)->send();
-    }
-
     public function createCanal(): void
     {
         if ($this->creatOneRandClient()) {
@@ -360,4 +353,161 @@ class Handler extends WebhookHandler
     // {
     //     $this->reply('VPN Клиентов: ' . $this->user_clients_count());
     // }
+
+    /**
+     * Шаг 1: Показываем кнопки выбора суммы
+     */
+    public function addbalance(): void
+    {
+        Log::info('[YKASSA] Вызов addbalance', ['chat_id' => $this->chat->chat_id]);
+
+        $this->chat->message("💳 Выберите сумму пополнения:")
+            ->keyboard(
+                Keyboard::make()
+                    ->row([
+                        Button::make('100 ₽')->action('sendInvoice')->param('amount', 100),
+                        Button::make('300 ₽')->action('sendInvoice')->param('amount', 300),
+                        Button::make('500 ₽')->action('sendInvoice')->param('amount', 500),
+                    ])
+                    ->row([
+                        Button::make('1000 ₽')->action('sendInvoice')->param('amount', 1000),
+                        Button::make('2000 ₽')->action('sendInvoice')->param('amount', 2000),
+                        Button::make('5000 ₽')->action('sendInvoice')->param('amount', 5000),
+                    ])
+                    ->row([
+                        Button::make('🔙 Назад')->action('greetExisting')
+                    ])
+            )
+            ->send();
+    }
+
+    /**
+     * Шаг 2: Отправка инвойса
+     */
+    public function sendInvoice(): void
+    {
+        $amount = (int) ($this->data->get('amount', 100));
+        $chatId = $this->chat->chat_id;
+        $userId = $this->user_id(); // ваш вспомогательный метод
+
+        Log::info('[YKASSA] sendInvoice вызван', [
+            'user_id' => $userId,
+            'chat_id' => $chatId,
+            'amount' => $amount
+        ]);
+
+        $user = User::find($userId);
+        if (!$user) {
+            Log::error('[YKASSA] Пользователь не найден', ['user_id' => $userId]);
+            $this->reply('Ошибка: пользователь не найден.');
+            return;
+        }
+
+        $payload = json_encode([
+            'user_id' => $user->id,
+            'amount' => $amount,
+            'time' => now()->timestamp
+        ]);
+
+        $providerToken = config('telegraph.payments.provider_token');
+
+        try {
+            $response = $this->chat
+                ->invoice("Пополнение баланса на {$amount} ₽")
+                ->description("Сумма к оплате: {$amount} ₽\nБудет зачислено: {$amount} у.е.")
+                ->currency('RUB')
+                ->addItem('Пополнение баланса', $amount * 100)
+                ->payload($payload)
+                ->startParameter('pay_' . $user->id)
+                ->withData('provider_token', $providerToken)
+                ->send();
+
+            Log::info('[YKASSA] Ответ Telegram на sendInvoice', [
+                'response' => $response->json(),
+                'status' => $response->status()
+            ]);
+
+            if ($response->json('ok') === true) {
+                Log::info('[YKASSA] Инвойс успешно отправлен', ['message_id' => $response->json('result.message_id')]);
+            } else {
+                Log::error('[YKASSA] Ошибка отправки инвойса', [
+                    'error_code' => $response->json('error_code'),
+                    'description' => $response->json('description')
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('[YKASSA] Исключение при отправке инвойса', [
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Шаг 3: Обработка PreCheckoutQuery (подтверждение перед списанием)
+     */
+    protected function handlePreCheckoutQuery(PreCheckoutQuery $preCheckoutQuery): void
+    {
+        $payload = $preCheckoutQuery->invoicePayload();
+        $totalAmount = $preCheckoutQuery->totalAmount();
+        $currency = $preCheckoutQuery->currency();
+
+        Log::info('[YKASSA] PreCheckoutQuery получен', [
+            'id' => $preCheckoutQuery->id(),
+            'payload' => $payload,
+            'total_amount' => $totalAmount,
+            'currency' => $currency
+        ]);
+
+        // Минимальная проверка: payload должен быть не пустым
+        if (empty($payload)) {
+            Log::error('[YKASSA] PreCheckoutQuery: пустой payload');
+            // Отклоняем платёж
+            throw new \Exception('Ошибка: неверные данные платежа');
+        }
+
+        // ВАЖНО: если всё ок, просто выходим — Telegraph автоматически отправит answerPreCheckoutQuery(ok=true)
+        Log::info('[YKASSA] PreCheckoutQuery подтверждён');
+    }
+
+    /**
+     * Шаг 4: Обработка SuccessfulPayment (успешный платёж)
+     */
+    protected function handleSuccessfulPayment(SuccessfulPayment $successfulPayment): void
+    {
+        $payload = $successfulPayment->invoicePayload();
+        $totalAmount = $successfulPayment->totalAmount();
+        $currency = $successfulPayment->currency();
+        $providerChargeId = $successfulPayment->providerPaymentChargeId();
+
+        Log::info('[YKASSA] SuccessfulPayment получен', [
+            'payload' => $payload,
+            'total_amount' => $totalAmount,
+            'currency' => $currency,
+            'provider_charge_id' => $providerChargeId
+        ]);
+
+        // Декодируем payload
+        $data = json_decode($payload, true);
+        if (!$data || !isset($data['user_id']) || !isset($data['amount'])) {
+            Log::error('[YKASSA] SuccessfulPayment: неверный payload', ['payload' => $payload]);
+            $this->reply('⚠️ Ошибка обработки платежа. Обратитесь в поддержку.');
+            return;
+        }
+
+        $userId = $data['user_id'];
+        $amountRub = $data['amount']; // сумма в рублях
+
+        // Здесь можно начислить баланс, но пока просто логируем
+        Log::info('[YKASSA] Успешный платёж пользователя', [
+            'user_id' => $userId,
+            'amount_rub' => $amountRub,
+            'provider_charge_id' => $providerChargeId
+        ]);
+
+        // Отправляем пользователю подтверждение
+        $this->chat->message("✅ Оплата прошла успешно!\n💰 Сумма: {$amountRub} ₽\n🆔 Транзакция: `{$providerChargeId}`")->send();
+
+        // Здесь можно добавить вызов метода начисления средств, например:
+        // Transaction::createTransaction($userId, 'deposit', $amountRub, 'Оплата через ЮKassa');
+    }
 }
