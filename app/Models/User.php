@@ -25,6 +25,7 @@ class User extends Authenticatable
         'telegram_first_name',
         'telegram_last_name',
         'telegram_username',
+        'referrer_id',
     ];
 
     /**

@@ -12,6 +12,7 @@ use Orchid\Platform\Models\Role;
 use App\Models\Transaction;
 use DefStudio\Telegraph\DTO\PreCheckoutQuery;
 use DefStudio\Telegraph\DTO\SuccessfulPayment;
+use DefStudio\Telegraph\Models\TelegraphChat;
 use Illuminate\Support\Facades\Http;
 
 class Handler extends WebhookHandler
@@ -20,23 +21,45 @@ class Handler extends WebhookHandler
     public function start(): void
     {
         $from = $this->message->from();
+        $text = $this->message->text();
 
-        // Ботам — вход запрещён
         if ($from->isBot()) {
-            $this->reply(__('Боты не могут регистрироваться.'));
+            $this->reply('Боты не могут регистрироваться.');
             return;
         }
 
         $user = User::where('telegram_id', $from->id())->first();
 
         if ($user) {
-            // Пользователь уже есть в базе
             $this->greetExisting($from);
-        } else {
-            // Новый пользователь
-            $user = $this->registerUser($from);
-            $this->greetNewcomer($from);
-            $this->awardBonus($user);
+            return;
+        }
+
+        // Парсим реферальный параметр
+        $referrerId = null;
+        if (str_starts_with($text, '/start ref_')) {
+            $refParam = substr($text, 7); // убираем '/start '
+            if (str_starts_with($refParam, 'ref_')) {
+                $refId = (int) substr($refParam, 4);
+                // Проверяем, что такой пользователь существует
+                if (User::where('id', $refId)->exists()) {
+                    $referrerId = $refId;
+                    Log::info('[Referral] Новый пользователь пришёл по реферальной ссылке', [
+                        'referrer_id' => $referrerId,
+                        'new_user_telegram' => $from->id()
+                    ]);
+                }
+            }
+        }
+
+        // Регистрируем нового пользователя с referrer_id
+        $user = $this->registerUser($from, $referrerId);
+        $this->greetNewcomer($from);
+        $this->awardBonus($user);
+
+        // Если есть реферер, можно отправить ему уведомление (опционально)
+        if ($referrerId) {
+            $this->notifyReferrerAboutNewUser($referrerId, $user);
         }
     }
 
@@ -88,10 +111,10 @@ class Handler extends WebhookHandler
     }
 
     /* ------------------------- 3. Регистрация нового пользователя ------------------------- */
-    private function registerUser(\DefStudio\Telegraph\DTO\User $from): User
+    private function registerUser(\DefStudio\Telegraph\DTO\User $from, ?int $referrerId = null): User
     {
         $server = config('vpn.default_server');
-        $name   = trim($from->firstName() . ' ' . ($from->lastName() ?? ''))
+        $name = trim($from->firstName() . ' ' . ($from->lastName() ?? ''))
             ?: 'TG_User_' . $from->id();
 
         $user = User::create([
@@ -102,9 +125,9 @@ class Handler extends WebhookHandler
             'name'                => $name,
             'email'               => ($from->username() ?: 'tg_' . $from->id()) . "@$server",
             'password'            => bcrypt((string)$from->id()),
+            'referrer_id'         => $referrerId,
         ]);
 
-        // Привязываем роль "consumer"
         $role = Role::where('slug', 'consumer')->first();
         if ($role) {
             $user->roles()->attach($role->id);
@@ -135,7 +158,14 @@ class Handler extends WebhookHandler
             Button::make(config('bot.button.support'))->url(config('bot.link.support'))
         ];
 
-        // 3-я строка: баланс и пополнение
+        // 3-я строка
+
+        $rows[] = [
+            Button::make('🤝 Реферальная программа')->action('ref'),
+        ];
+
+        // 4-я строка: баланс и пополнение
+
         $rows[] = [
             Button::make('Баланс')->action('showbalance'),
             Button::make('Пополнить')->action('addbalance')->param('uid', $this->message->from()->id()),
@@ -524,6 +554,37 @@ class Handler extends WebhookHandler
                 isActive: true
             );
 
+            // Проверяем, есть ли у пользователя пригласивший
+            $user = User::find($userId);
+
+            if ($user && $user->referrer_id) {
+
+                $bonusPercent = config('vpn.referral_bonus_percent', 10);
+                $bonusAmount = round($amountRub * $bonusPercent / 100, 2);
+
+                if ($bonusAmount > 0) {
+                    // Создаём транзакцию бонуса для пригласившего
+                    Transaction::createTransaction(
+                        userId: $user->referrer_id,
+                        type: 'deposit',
+                        amount: $bonusAmount,
+                        subjectType: 'referral_bonus',
+                        subjectId: null,
+                        comment: "Бонус за приглашение пользователя #{$userId}",
+                        isActive: true
+                    );
+
+                    Log::info('[Referral] Бонус начислен', [
+                        'referrer_id' => $user->referrer_id,
+                        'bonus' => $bonusAmount,
+                        'from_user' => $userId
+                    ]);
+
+                    // Отправляем уведомление пригласившему
+                    $this->notifyReferrerAboutBonus($user->referrer_id, $bonusAmount, $user);
+                }
+            }
+
             Log::info('[YKASSA] Транзакция создана', [
                 'user_id' => $userId,
                 'amount' => $amountRub,
@@ -550,5 +611,78 @@ class Handler extends WebhookHandler
             ]);
             $this->reply("⚠️ Платёж прошёл, но ошибка при зачислении. ID: {$providerChargeId}");
         }
+    }
+
+    public function ref(): void
+    {
+        $user = User::find($this->user_id());
+        if (!$user) return;
+
+        $botUsername = env('TELEGRAPH_BOT_USERNAME'); // например, 'my_vpn_bot'
+        $refLink = "https://t.me/{$botUsername}?start=ref_{$user->id}";
+
+        // Подсчитываем статистику: сколько пригласил, сколько заработал
+        $invitedCount = User::where('referrer_id', $user->id)->count();
+        $bonusEarned = Transaction::where('user_id', $user->id)
+            ->where('subject_type', 'referral_bonus')
+            ->sum('amount');
+
+        $text = "🤝 *Ваша реферальная ссылка:*\n`{$refLink}`\n\n";
+        $text .= "📊 *Статистика:*\n";
+        $text .= "— Приглашено пользователей: *{$invitedCount}*\n";
+        $text .= "— Заработано бонусов: *{$bonusEarned} у.е.*\n\n";
+        $text .= "За каждого приглашённого вы получаете *" . config('vpn.referral_bonus_percent', 10) . "%* от суммы его пополнений!";
+
+        $this->chat->message($text)->send();
+    }
+
+    // Обработчик для кнопки копирования (опционально)
+    public function copyRefLink(): void
+    {
+        $link = $this->data->get('link');
+        // В Telegram нельзя скопировать текст напрямую через кнопку, но можно отправить сообщение со ссылкой
+        $this->reply("Ваша реферальная ссылка:\n`{$link}`");
+    }
+
+    protected function notifyReferrerAboutNewUser(int $referrerId, User $newUser): void
+    {
+        $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
+        $chat = TelegraphChat::where('chat_id', $newUser->telegram_id) // здесь нужно получить чат реферера, а не нового пользователя
+            ->where('telegraph_bot_id', $botId)
+            ->first();
+
+        // Но нам нужен чат реферера, а не нового. Исправим:
+        $referrer = User::find($referrerId);
+        if (!$referrer) return;
+
+        $chat = TelegraphChat::where('chat_id', $referrer->telegram_id)
+            ->where('telegraph_bot_id', $botId)
+            ->first();
+
+        if (!$chat) return;
+
+        $text = "👋 По вашей реферальной ссылке зарегистрировался новый пользователь!\n\n";
+        $text .= "Имя: {$newUser->name}\n";
+        $text .= "Когда он пополнит баланс, вы получите бонус.";
+
+        $chat->message($text)->send();
+    }
+
+    protected function notifyReferrerAboutBonus(int $referrerId, float $bonus, User $newUser): void
+    {
+        $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
+        $referrer = User::find($referrerId);
+        if (!$referrer) return;
+
+        $chat = TelegraphChat::where('chat_id', $referrer->telegram_id)
+            ->where('telegraph_bot_id', $botId)
+            ->first();
+
+        if (!$chat) return;
+
+        $text = "🎉 Вам начислен бонус *{$bonus} у.е.* за пополнение баланса пользователем {$newUser->name}!\n\n";
+        $text .= "Спасибо что приглашаете друзей!";
+
+        $chat->message($text)->send();
     }
 }
