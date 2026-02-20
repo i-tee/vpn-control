@@ -13,9 +13,14 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Collection;
 
+use DefStudio\Telegraph\Models\TelegraphChat;
+use DefStudio\Telegraph\Keyboard\Keyboard;
+use DefStudio\Telegraph\Keyboard\Button;
+
 class ChargeVpnClients extends Command
 {
-    protected $signature = 'vpn:daily-charge';
+
+    protected $signature = 'vpn:daily-charge {--user-ids= : Comma-separated list of user IDs to process (optional)} {--force-notify : Send notification regardless of days left}';
     protected $description = 'Daily charge for active VPN clients, deactivate on negative balance, reactivate on positive';
 
     protected VpnService $vpnService;
@@ -34,6 +39,20 @@ class ChargeVpnClients extends Command
         $consumers = User::whereHas('roles', function ($query) {
             $query->where('slug', 'consumer');
         })->get();
+
+        // Применяем фильтр по ID, если передан параметр --user-ids
+        $userIdsOption = $this->option('user-ids');
+        if ($userIdsOption) {
+            $userIds = explode(',', $userIdsOption);
+            $userIds = array_map('trim', $userIds);
+            $userIds = array_filter($userIds, 'is_numeric');
+            if (!empty($userIds)) {
+                $consumers = $consumers->filter(fn($user) => in_array($user->id, $userIds));
+                $this->info("Filtered to " . $consumers->count() . " consumers by provided IDs.");
+            } else {
+                $this->warn("No valid numeric IDs found in --user-ids. Processing all consumers.");
+            }
+        }
 
         $this->info("Found {$consumers->count()} consumers");
         $totalCharged = 0;
@@ -133,6 +152,19 @@ class ChargeVpnClients extends Command
                     }
                 }
             }
+
+            // Рассчитываем количество дней до блокировки (положительный остаток)
+            $daysLeft = $balanceAfter > 0 ? floor($balanceAfter / config('vpn.default_price')) : 0;
+            $wasBlocked = $balanceAfter < 0; // пользователь был заблокирован, если баланс отрицательный
+
+            // Отправляем уведомление, если баланс меньше 7 дней или если заблокирован
+            $forceNotify = $this->option('force-notify');
+
+            Log::info('[BalanceNotify] Опция --force-notify:', ['value' => $forceNotify ? 'true' : 'false']);
+
+            if ($forceNotify || $wasBlocked || $daysLeft < 7) {
+                $this->sendBalanceNotification($consumer, $balanceAfter, $daysLeft, $wasBlocked, $forceNotify);
+            }
         }
 
         Log::info('NOTIKI -- Before IF to send ClientsBlocked', ['count' => $allBlockedClients->count()]);
@@ -166,5 +198,90 @@ class ChargeVpnClients extends Command
             ->where('is_active', true)
             ->selectRaw('SUM(CASE WHEN type = "deposit" THEN amount ELSE -amount END) as balance')
             ->value('balance') ?? 0;
+    }
+
+    /**
+     * Отправить уведомление пользователю о балансе и блокировке
+     */
+    protected function sendBalanceNotification(User $user, float $balance, int $daysLeft, bool $isBlocked, bool $force = false): void
+    {
+        Log::info('[BalanceNotify] Вызван sendBalanceNotification', [
+            'user_id' => $user->id,
+            'balance' => $balance,
+            'days_left' => $daysLeft,
+            'isBlocked' => $isBlocked,
+            'force' => $force ? 'true' : 'false'
+        ]);
+
+        $chat = TelegraphChat::where('chat_id', $user->telegram_id)->first();
+        if (!$chat) {
+            Log::warning('[BalanceNotify] Чат не найден', ['user_id' => $user->id, 'telegram_id' => $user->telegram_id]);
+            return;
+        }
+
+        Log::info('[BalanceNotify] Чат найден', ['chat_id' => $chat->chat_id]);
+
+        // Формируем текст с учётом force
+        if ($isBlocked) {
+            $text = "🚫 *Ваш VPN-доступ заблокирован*\n\n";
+            $text .= "💰 Баланс: {$balance} у.е.\n";
+            $text .= "Для восстановления доступа пополните баланс.";
+        } elseif ($daysLeft < 7 || $force) {
+            if ($force && $daysLeft >= 7) {
+                $text = "ℹ️ *Тестовое уведомление*\n\n";
+                $text .= "У вас достаточно средств на *{$daysLeft} дней*.\n";
+                $text .= "💰 Баланс: {$balance} у.е.\n";
+                $text .= "Это тестовое сообщение, отправленное с флагом --force-notify.";
+            } else {
+                $text = "⚠️ *Внимание!*\n\n";
+                $text .= "У вас осталось *{$daysLeft} " . $this->pluralDays($daysLeft) . "* до блокировки сервиса.\n";
+                $text .= "💰 Баланс: {$balance} у.е.\n";
+                $text .= "Рекомендуем пополнить баланс.";
+            }
+        } else {
+            Log::info('[BalanceNotify] Условия не выполнены, отправка не требуется', [
+                'daysLeft' => $daysLeft,
+                'isBlocked' => $isBlocked,
+                'force' => $force
+            ]);
+            return;
+        }
+
+        Log::info('[BalanceNotify] Попытка отправить сообщение', ['text' => $text]);
+
+        $keyboard = Keyboard::make()->row([
+            Button::make('💳 Пополнить')->action('addbalance')->param('uid', $user->telegram_id),
+            Button::make('🆘 Техподдержка')->url(config('bot.link.support')),
+        ]);
+
+        $response = $chat->message($text)
+            ->keyboard($keyboard)
+            ->send();
+
+        if ($response->json('ok') === true) {
+            Log::info('[BalanceNotify] Уведомление успешно отправлено', [
+                'user_id' => $user->id,
+                'message_id' => $response->json('result.message_id')
+            ]);
+        } else {
+            Log::error('[BalanceNotify] Ошибка отправки уведомления', [
+                'user_id' => $user->id,
+                'response' => $response->json()
+            ]);
+        }
+    }
+
+    /**
+     * Вспомогательный метод для склонения слова "день"
+     */
+    protected function pluralDays(int $days): string
+    {
+        if ($days % 10 == 1 && $days % 100 != 11) {
+            return 'день';
+        } elseif ($days % 10 >= 2 && $days % 10 <= 4 && ($days % 100 < 10 || $days % 100 >= 20)) {
+            return 'дня';
+        } else {
+            return 'дней';
+        }
     }
 }
