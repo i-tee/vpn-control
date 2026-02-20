@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Collection;
-
+use App\Notifications\DailySummary;
 use DefStudio\Telegraph\Models\TelegraphChat;
 use DefStudio\Telegraph\Keyboard\Keyboard;
 use DefStudio\Telegraph\Keyboard\Button;
@@ -36,6 +36,16 @@ class ChargeVpnClients extends Command
         $this->info('Starting daily VPN client charge process...');
         Log::info('NOTIKI -- Starting daily VPN client charge process');
 
+        // Общая статистика по системе (до фильтрации)
+        $totalConsumers = User::whereHas('roles', function ($query) {
+            $query->where('slug', 'consumer');
+        })->count();
+
+        $totalClients = Client::count();
+        $activeClientsTotal = Client::where('is_active', true)->count();
+        $inactiveClientsTotal = Client::where('is_active', false)->count();
+
+        // Получаем всех потребителей для обработки
         $consumers = User::whereHas('roles', function ($query) {
             $query->where('slug', 'consumer');
         })->get();
@@ -54,9 +64,10 @@ class ChargeVpnClients extends Command
             }
         }
 
-        $this->info("Found {$consumers->count()} consumers");
+        $this->info("Found {$consumers->count()} consumers to process");
         $totalCharged = 0;
         $allBlockedClients = new Collection();
+        $totalActiveClients = 0; // для статистики по обработанным
 
         foreach ($consumers as $consumer) {
             $activeClients = Client::where('user_id', $consumer->id)
@@ -71,6 +82,8 @@ class ChargeVpnClients extends Command
 
             $totalCharge = 0;
             $serverDetails = [];
+
+            $totalActiveClients += $activeClients->count();
 
             // Расчёт суммы списания по каждому клиенту
             foreach ($activeClients as $client) {
@@ -169,9 +182,8 @@ class ChargeVpnClients extends Command
 
         Log::info('NOTIKI -- Before IF to send ClientsBlocked', ['count' => $allBlockedClients->count()]);
 
-        // Отправка уведомления администратору о заблокированных клиентах
+        // Отправка уведомления администратору о заблокированных клиентах (по email)
         if ($allBlockedClients->isNotEmpty()) {
-
             Log::info('NOTIKI -- Preparing to send ClientsBlocked', ['count' => $allBlockedClients->count()]);
 
             $adminEmail = env('ADMIN_EMAIL');
@@ -181,6 +193,31 @@ class ChargeVpnClients extends Command
                 $this->info('Notification about blocked clients sent to admin.');
                 Log::info('NOTIKI -- Notification about blocked clients sent to admin.', ['count' => $allBlockedClients->count()]);
             }
+        }
+
+        // Отправляем сводку администратору в Telegram
+        $this->sendAdminSummary(
+            totalConsumers: $totalConsumers,
+            totalClients: $totalClients,
+            activeClients: $activeClientsTotal,
+            inactiveClients: $inactiveClientsTotal,
+            totalCharged: $totalCharged,
+            blockedToday: $allBlockedClients->count()
+        );
+
+        // Отправляем сводку администратору на email
+        $adminEmail = env('ADMIN_EMAIL');
+        if ($adminEmail) {
+            Notification::route('mail', $adminEmail)
+                ->notify(new \App\Notifications\DailySummary(
+                    totalConsumers: $totalConsumers,
+                    totalClients: $totalClients,
+                    activeClients: $activeClientsTotal,
+                    inactiveClients: $inactiveClientsTotal,
+                    totalCharged: $totalCharged,
+                    blockedToday: $allBlockedClients->count()
+                ));
+            Log::info('[DailySummary] Сводка отправлена на email', ['email' => $adminEmail]);
         }
 
         $this->info("Daily charge process completed. Total charged: {$totalCharged}");
@@ -213,14 +250,12 @@ class ChargeVpnClients extends Command
             'force' => $force ? 'true' : 'false'
         ]);
 
-        // Получаем ID бота из .env (например, TELEGRAPH_BOT_NOTIFY_ID=3)
         $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
         if (!$botId) {
             Log::error('[BalanceNotify] TELEGRAPH_BOT_NOTIFY_ID не задан в .env');
             return;
         }
 
-        // Ищем чат пользователя для конкретного бота
         $chat = TelegraphChat::where('chat_id', $user->telegram_id)
             ->where('telegraph_bot_id', $botId)
             ->first();
@@ -236,7 +271,6 @@ class ChargeVpnClients extends Command
 
         Log::info('[BalanceNotify] Чат найден', ['chat_id' => $chat->chat_id, 'bot_id' => $botId]);
 
-        // Формируем текст с учётом force
         if ($isBlocked) {
             $text = "🚫 *Ваш VPN-доступ заблокирован*\n\n";
             $text .= "💰 Баланс: {$balance} у.е.\n";
@@ -265,8 +299,7 @@ class ChargeVpnClients extends Command
         Log::info('[BalanceNotify] Попытка отправить сообщение', ['text' => $text]);
 
         $keyboard = Keyboard::make()->row([
-            Button::make('💳 Пополнить')->action('addbalance')->param('uid', $user->telegram_id),
-            Button::make('🆘 Техподдержка')->url(config('bot.link.support')),
+            Button::make('💳 Пополнить')->action('addbalance')->param('uid', $user->telegram_id)
         ]);
 
         $response = $chat->message($text)
@@ -297,6 +330,50 @@ class ChargeVpnClients extends Command
             return 'дня';
         } else {
             return 'дней';
+        }
+    }
+
+    /**
+     * Отправить сводку администратору в Telegram
+     */
+    protected function sendAdminSummary(int $totalConsumers, int $totalClients, int $activeClients, int $inactiveClients, float $totalCharged, int $blockedToday): void
+    {
+        $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
+        $adminChatId = env('ADMIN_CHAT_ID');
+
+        if (!$botId || !$adminChatId) {
+            Log::warning('[AdminSummary] TELEGRAPH_BOT_NOTIFY_ID или ADMIN_CHAT_ID не заданы в .env');
+            return;
+        }
+
+        $chat = TelegraphChat::where('chat_id', $adminChatId)
+            ->where('telegraph_bot_id', $botId)
+            ->first();
+
+        if (!$chat) {
+            Log::warning('[AdminSummary] Чат администратора не найден', [
+                'chat_id' => $adminChatId,
+                'bot_id' => $botId
+            ]);
+            return;
+        }
+
+        $text = "📊 *Отчёт о ежедневном списании*\n\n";
+        $text .= "👥 Всего потребителей: *{$totalConsumers}*\n";
+        $text .= "🔑 Всего клиентов: *{$totalClients}*\n";
+        $text .= "   ✅ Активных: *{$activeClients}*\n";
+        $text .= "   ❌ Неактивных: *{$inactiveClients}*\n";
+        $text .= "💰 Списано сегодня: *{$totalCharged} у.е.*\n";
+        $text .= "🚫 Заблокировано сегодня: *{$blockedToday}*\n";
+
+        $response = $chat->message($text)->send();
+
+        if ($response->json('ok') === true) {
+            Log::info('[AdminSummary] Сводка успешно отправлена администратору');
+        } else {
+            Log::error('[AdminSummary] Ошибка отправки сводки', [
+                'response' => $response->json()
+            ]);
         }
     }
 }

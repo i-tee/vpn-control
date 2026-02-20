@@ -2,7 +2,7 @@
 
 return [
     'button' => [
-        'instruction' => 'Инструкция',
+        'instruction' => 'Подклюиться',
         'myvpn' => 'Мой VPN-Канал',
         'support' => 'Техподдержка',
     ],
