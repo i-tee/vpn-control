@@ -181,7 +181,14 @@ class Handler extends WebhookHandler
             "Ваш баланс: {$user_balance} у.е.\n" .
                 "Расход: " . config('vpn.default_price') . " у.е./сутки\n" .
                 "Ещё дней: " . ceil($user_balance / config('vpn.default_price'))
-        )->send();
+        )
+
+            ->keyboard(
+                Keyboard::make()->row([
+                    Button::make('Пополнить баланс')->action('addbalance'),
+                ])
+            )
+            ->send();
     }
 
     //instructionsGagets
