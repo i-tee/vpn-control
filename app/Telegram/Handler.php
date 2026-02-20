@@ -375,9 +375,6 @@ class Handler extends WebhookHandler
                         Button::make('2000 ₽')->action('sendInvoice')->param('amount', 2000),
                         Button::make('5000 ₽')->action('sendInvoice')->param('amount', 5000),
                     ])
-                    ->row([
-                        Button::make('🔙 Назад')->action('greetExisting')
-                    ])
             )
             ->send();
     }
@@ -509,10 +506,43 @@ class Handler extends WebhookHandler
             'provider_charge_id' => $providerChargeId
         ]);
 
-        // Отправляем пользователю подтверждение
-        $this->chat->message("✅ Оплата прошла успешно!\n💰 Сумма: {$amountRub} ₽\n🆔 Транзакция: `{$providerChargeId}`")->send();
+        try {
+            // Создаём транзакцию с информацией о платеже
+            Transaction::createTransaction(
+                userId: $userId,                // правильно: userId (camelCase)
+                type: 'deposit',
+                amount: $amountRub,
+                subjectType: 'yookassa',        // правильно: subjectType
+                subjectId: null,
+                comment: "Оплата через ЮKassa, транзакция: {$providerChargeId}",
+                isActive: true
+            );
 
-        // Здесь можно добавить вызов метода начисления средств, например:
-        // Transaction::createTransaction($userId, 'deposit', $amountRub, 'Оплата через ЮKassa');
+            Log::info('[YKASSA] Транзакция создана', [
+                'user_id' => $userId,
+                'amount' => $amountRub,
+                'provider_charge_id' => $providerChargeId
+            ]);
+
+            // Отправляем пользователю подтверждение
+            $newBalance = $this->getBalance();
+            $this->chat->message(
+                "✅ *Оплата успешна!*\n\n" .
+                    "💰 Зачислено: {$amountRub} у.е.\n" .
+                    "💼 Текущий баланс: {$newBalance} у.е.\n"
+            )->keyboard(
+                Keyboard::make()->row([
+                    Button::make('💼 Мой баланс')->action('showbalance')
+                ])
+            )->send();
+        } catch (\Exception $e) {
+            Log::error('[YKASSA] Ошибка при создании транзакции', [
+                'error' => $e->getMessage(),
+                'user_id' => $userId,
+                'amount' => $amountRub,
+                'provider_charge_id' => $providerChargeId
+            ]);
+            $this->reply("⚠️ Платёж прошёл, но ошибка при зачислении. ID: {$providerChargeId}");
+        }
     }
 }
