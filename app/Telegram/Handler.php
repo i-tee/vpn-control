@@ -13,6 +13,7 @@ use App\Models\Transaction;
 
 use DefStudio\Telegraph\DTO\PreCheckoutQuery;
 use DefStudio\Telegraph\DTO\SuccessfulPayment;
+use Illuminate\Support\Facades\Http;
 
 class Handler extends WebhookHandler
 {
@@ -447,26 +448,30 @@ class Handler extends WebhookHandler
      */
     protected function handlePreCheckoutQuery(PreCheckoutQuery $preCheckoutQuery): void
     {
-        $payload = $preCheckoutQuery->invoicePayload();
-        $totalAmount = $preCheckoutQuery->totalAmount();
-        $currency = $preCheckoutQuery->currency();
+        Log::info('[YKASSA] PreCheckoutQuery получен', ['id' => $preCheckoutQuery->id()]);
 
-        Log::info('[YKASSA] PreCheckoutQuery получен', [
-            'id' => $preCheckoutQuery->id(),
-            'payload' => $payload,
-            'total_amount' => $totalAmount,
-            'currency' => $currency
-        ]);
+        // Берём токен бота из .env (или из config, если он там правильно определён)
+        $botToken = env('TELEGRAPH_BOT_TOKEN'); // или config('telegraph.bots.default.token') после настройки
 
-        // Минимальная проверка: payload должен быть не пустым
-        if (empty($payload)) {
-            Log::error('[YKASSA] PreCheckoutQuery: пустой payload');
-            // Отклоняем платёж
-            throw new \Exception('Ошибка: неверные данные платежа');
+        if (empty($botToken)) {
+            Log::error('[YKASSA] Токен бота не найден!');
+            throw new \Exception('Ошибка конфигурации бота');
         }
 
-        // ВАЖНО: если всё ок, просто выходим — Telegraph автоматически отправит answerPreCheckoutQuery(ok=true)
-        Log::info('[YKASSA] PreCheckoutQuery подтверждён');
+        // Формируем URL и отправляем запрос
+        $url = "https://api.telegram.org/bot{$botToken}/answerPreCheckoutQuery";
+        $response = Http::post($url, [
+            'pre_checkout_query_id' => $preCheckoutQuery->id(),
+            'ok' => true,
+        ]);
+
+        Log::info('[YKASSA] Ответ на PreCheckoutQuery отправлен', $response->json());
+
+        // Если хотите сохранить payload для последующей обработки
+        $payload = json_decode($preCheckoutQuery->invoicePayload(), true);
+        if ($payload && isset($payload['user_id'])) {
+            cache()->put('payment_' . $preCheckoutQuery->id(), $payload, now()->addMinutes(10));
+        }
     }
 
     /**
