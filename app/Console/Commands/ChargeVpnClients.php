@@ -213,13 +213,28 @@ class ChargeVpnClients extends Command
             'force' => $force ? 'true' : 'false'
         ]);
 
-        $chat = TelegraphChat::where('chat_id', $user->telegram_id)->first();
-        if (!$chat) {
-            Log::warning('[BalanceNotify] Чат не найден', ['user_id' => $user->id, 'telegram_id' => $user->telegram_id]);
+        // Получаем ID бота из .env (например, TELEGRAPH_BOT_NOTIFY_ID=3)
+        $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
+        if (!$botId) {
+            Log::error('[BalanceNotify] TELEGRAPH_BOT_NOTIFY_ID не задан в .env');
             return;
         }
 
-        Log::info('[BalanceNotify] Чат найден', ['chat_id' => $chat->chat_id]);
+        // Ищем чат пользователя для конкретного бота
+        $chat = TelegraphChat::where('chat_id', $user->telegram_id)
+            ->where('telegraph_bot_id', $botId)
+            ->first();
+
+        if (!$chat) {
+            Log::warning('[BalanceNotify] Чат не найден', [
+                'user_id' => $user->id,
+                'telegram_id' => $user->telegram_id,
+                'bot_id' => $botId
+            ]);
+            return;
+        }
+
+        Log::info('[BalanceNotify] Чат найден', ['chat_id' => $chat->chat_id, 'bot_id' => $botId]);
 
         // Формируем текст с учётом force
         if ($isBlocked) {
