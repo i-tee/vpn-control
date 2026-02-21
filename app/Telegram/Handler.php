@@ -94,11 +94,24 @@ class Handler extends WebhookHandler
     /* ------------------------- 2. Приветствие нового пользователя ------------------------- */
     private function greetNewcomer(\DefStudio\Telegraph\DTO\User $from): void
     {
-        $d = ceil(config('vpn.entry_bonus') / config('vpn.default_price')); // дней бесплатно
+        $price = config('vpn.default_price', 12);
+        $bonus = config('vpn.entry_bonus', 360);
+        $daysFree = ceil($bonus / $price); // дней бесплатно
 
-        $this->chat->message(
-            "👋 Привет, {$from->firstName()}!\n" . config('bot.text.welcome') . "\n\n{$d} дней бесплатно"
-        )
+        // Получаем текст приветствия из конфига
+        $welcomeText = config('bot.text.welcome');
+
+        // Заменяем плейсхолдеры
+        $replacements = [
+            '{price}' => $price,
+            '{bonus}' => $bonus,
+        ];
+        $welcomeText = str_replace(array_keys($replacements), array_values($replacements), $welcomeText);
+
+        // Формируем полное сообщение
+        $fullMessage = "👋 Привет, {$from->firstName()}!\n" . $welcomeText . "\n\n🎁 Вам начислено {$daysFree} дней бесплатно!";
+
+        $this->chat->message($fullMessage)
             ->keyboard(
                 Keyboard::make()
                     ->row([Button::make(config('bot.text.creat'))->action('createCanal')])
