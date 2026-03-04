@@ -13,9 +13,12 @@ class ConsumerListScreen extends Screen
     public function query(): array
     {
         $users = User::whereHas('roles', fn($q) => $q->where('slug', 'consumer'))
-            ->withCount('clients as vpn_clients_count')
+            ->withCount([
+                'clients as vpn_clients_count',
+                'referrals as referrals_count' // подгружаем количество рефералов
+            ])
             ->withBalance()
-            ->filters() // автоматически применяет фильтры из allowedFilters
+            ->filters()
             ->defaultSort('id')
             ->paginate(15);
 
@@ -61,6 +64,14 @@ class ConsumerListScreen extends Screen
 
                 TD::make('vpn_clients_count', 'VPN Clients')
                     ->sort(),
+
+                // Новая колонка с рефералами
+                TD::make('referrals_count', '👥 Рефералы')
+                    ->sort()
+                    ->render(fn(User $user) => $user->referrals_count > 0
+                        ? "<span class='text-success'><i class='icon icon-people me-1'></i>{$user->referrals_count}</span>"
+                        : "<span class='text-muted'><i class='icon icon-user me-1'></i>0</span>"
+                    ),
 
                 TD::make('balance', 'Balance')
                     ->sort()

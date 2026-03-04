@@ -77,6 +77,11 @@ class User extends Authenticatable
         'balance',
     ];
 
+    public function referrals()
+    {
+        return $this->hasMany(User::class, 'referrer_id');
+    }
+
     public function getBalanceAttribute()
     {
         return app(BinderService::class)->getUserBalance($this);
