@@ -66,7 +66,7 @@ class ConsumerListScreen extends Screen
                     ->sort(),
 
                 // Новая колонка с рефералами
-                TD::make('referrals_count', '👥 Рефералы')
+                TD::make('referrals_count', 'Refs')
                     ->sort()
                     ->render(fn(User $user) => $user->referrals_count > 0
                         ? "<span class='text-success'><i class='icon icon-people me-1'></i>{$user->referrals_count}</span>"
