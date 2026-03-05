@@ -149,16 +149,30 @@ class User extends Authenticatable
         $vpn = new VpnService();
         $user = self::find($user_id);
 
+        // Если у пользователя нет telegram_username, генерируем на основе id
+        $username = $user->telegram_username;
+        if (empty($username)) {
+            $username = 'c_' . $user->id . '_' . rand(111, 999); // Генерируем уникальное имя
+            Log::info('[VPN] Using generated username for client creation', [
+                'user_id' => $user_id,
+                'generated_username' => $username
+            ]);
+        }
+
         $result = $vpn->createClient(
-            $user->telegram_username,
-            $user->telegram_id,
-            $user_id,
-            $user->telegram_username,
-            true
+            $username,                 // имя клиента на VPN-сервере
+            $user->telegram_id,        // telegram_id (используется как пароль)
+            $user_id,                  // внутренний ID пользователя
+            $username,                 // комментарий (можно тоже подставить имя)
+            true                       // активировать сразу
         );
 
         if (!$result) {
-            return false; // Клиент с таким именем уже существует
+            Log::error('[VPN] Failed to create client', [
+                'user_id' => $user_id,
+                'username' => $username
+            ]);
+            return false; // Клиент с таким именем уже существует или другая ошибка
         }
         return true;
     }
