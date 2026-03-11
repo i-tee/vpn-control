@@ -133,8 +133,8 @@ class Handler extends WebhookHandler
         $user = User::create([
             'telegram_id'         => $from->id(),
             'telegram_first_name' => $from->firstName(),
-            'telegram_last_name'  => $from->lastName(),
-            'telegram_username'   => $from->username(),
+            'telegram_last_name'  => $from->lastName() ?: null,
+            'telegram_username'   => $from->username() ?: null,
             'name'                => $name,
             'email'               => ($from->username() ?: 'tg_' . $from->id()) . "@$server",
             'password'            => bcrypt((string)$from->id()),
