@@ -209,7 +209,7 @@ class Handler extends WebhookHandler
                 amount: $bonus,
                 comment: 'Вступительный бонус'
             );
-            $this->reply("🎉 Вам начислен вступительный бонус {$bonus} ₽.!");
+            $this->reply("🎉 Вам начислен вступительный бонус {$bonus} у.е.!");
         } catch (\Exception $e) {
             Log::error('Ошибка начисления бонуса', [
                 'user_id' => $user->id,
@@ -223,8 +223,8 @@ class Handler extends WebhookHandler
     {
         $user_balance = $this->getBalance();
         $this->chat->message(
-            "💼 *Ваш баланс:* {$user_balance} ₽.\n" .
-                "📉 Расход: " . config('vpn.default_price') . " ₽./сутки\n" .
+            "💼 *Ваш баланс:* {$user_balance} у.е.\n" .
+                "📉 Расход: " . config('vpn.default_price') . " у.е./сутки\n" .
                 "⏳ Ещё дней: " . ceil($user_balance / config('vpn.default_price'))
         )
             ->keyboard(
@@ -247,6 +247,9 @@ class Handler extends WebhookHandler
                     ])
                     ->row([
                         Button::make('🤖 Android (Samsung и др.)')->action('instructions_adroid'),
+                    ])
+                    ->row([
+                        Button::make('🏠 VPN для всего дома / квартиры')->action('homeVpn'),
                     ])
                     ->row([
                         Button::make('💬 Другое — написать в поддержку')->url(config('bot.link.support')),
@@ -281,6 +284,23 @@ class Handler extends WebhookHandler
     {
         $this->chat->message(config('bot.text.instructions.mac'))
             ->keyboard(Keyboard::make()->row($this->menuButton()))
+            ->send();
+    }
+
+    public function homeVpn(): void
+    {
+        $text = "🏠 *VPN для всего дома или квартиры*\n\n"
+            . "Мы можем приехать лично и настроить VPN прямо на вашем роутере — тогда *все устройства дома* будут защищены автоматически: телевизор, телефоны, ноутбуки, планшеты.\n\n"
+            . "📍 Работаем по *Москве и Московской области*\n"
+            . "💰 Это недорого — стоимость обсуждается индивидуально\n\n"
+            . "Напишите нам — договоримся об удобном времени 👇";
+
+        $this->chat->message($text)
+            ->keyboard(
+                Keyboard::make()
+                    ->row([Button::make('💬 Обсудить и договориться')->url(config('bot.link.support'))])
+                    ->row($this->menuButton())
+            )
             ->send();
     }
 
@@ -405,7 +425,7 @@ class Handler extends WebhookHandler
     // public function balance(): void
     // {
     //     $user_balance = $this->getBalance();
-    //     $this->reply("Ваш баланс: {$user_balance} ₽.");
+    //     $this->reply("Ваш баланс: {$user_balance} у.е.");
     // }
 
     public function instructionRow(): void
@@ -490,7 +510,7 @@ class Handler extends WebhookHandler
         try {
             $response = $this->chat
                 ->invoice("Пополнение баланса на {$amount} ₽")
-                ->description("Сумма к оплате: {$amount} ₽\nБудет зачислено: {$amount} ₽.")
+                ->description("Сумма к оплате: {$amount} ₽\nБудет зачислено: {$amount} у.е.")
                 ->currency('RUB')
                 ->addItem('Пополнение баланса', $amount * 100)
                 ->payload($payload)
@@ -637,8 +657,8 @@ class Handler extends WebhookHandler
             $newBalance = $this->getBalance();
             $this->chat->message(
                 "✅ *Оплата успешна!*\n\n" .
-                    "💰 Зачислено: {$amountRub} ₽.\n" .
-                    "💼 Текущий баланс: {$newBalance} ₽.\n"
+                    "💰 Зачислено: {$amountRub} у.е.\n" .
+                    "💼 Текущий баланс: {$newBalance} у.е.\n"
             )->keyboard(
                 Keyboard::make()->row([
                     Button::make('💼 Мой баланс')->action('showbalance')
@@ -672,7 +692,7 @@ class Handler extends WebhookHandler
         $text = "🤝 *Ваша реферальная ссылка:*\n`{$refLink}`\n\n";
         $text .= "📊 *Статистика:*\n";
         $text .= "— Приглашено пользователей: *{$invitedCount}*\n";
-        $text .= "— Заработано бонусов: *{$bonusEarned} ₽.*\n\n";
+        $text .= "— Заработано бонусов: *{$bonusEarned} у.е.*\n\n";
         $text .= "За каждого приглашённого вы получаете *" . config('vpn.referral_bonus_percent', 10) . "%* от суммы его пополнений!";
 
         $this->chat->message($text)
@@ -724,7 +744,7 @@ class Handler extends WebhookHandler
 
         if (!$chat) return;
 
-        $text = "🎉 Вам начислен бонус *{$bonus} ₽.* за пополнение баланса пользователем {$newUser->name}!\n\n";
+        $text = "🎉 Вам начислен бонус *{$bonus} у.е.* за пополнение баланса пользователем {$newUser->name}!\n\n";
         $text .= "Спасибо что приглашаете друзей!";
 
         $chat->message($text)->send();
