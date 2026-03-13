@@ -209,7 +209,7 @@ class Handler extends WebhookHandler
                 amount: $bonus,
                 comment: 'Вступительный бонус'
             );
-            $this->reply("🎉 Вам начислен вступительный бонус {$bonus} у.е.!");
+            $this->reply("🎉 Вам начислен вступительный бонус {$bonus} ₽.!");
         } catch (\Exception $e) {
             Log::error('Ошибка начисления бонуса', [
                 'user_id' => $user->id,
@@ -223,8 +223,8 @@ class Handler extends WebhookHandler
     {
         $user_balance = $this->getBalance();
         $this->chat->message(
-            "💼 *Ваш баланс:* {$user_balance} у.е.\n" .
-                "📉 Расход: " . config('vpn.default_price') . " у.е./сутки\n" .
+            "💼 *Ваш баланс:* {$user_balance} ₽.\n" .
+                "📉 Расход: " . config('vpn.default_price') . " ₽./сутки\n" .
                 "⏳ Ещё дней: " . ceil($user_balance / config('vpn.default_price'))
         )
             ->keyboard(
@@ -405,7 +405,7 @@ class Handler extends WebhookHandler
     // public function balance(): void
     // {
     //     $user_balance = $this->getBalance();
-    //     $this->reply("Ваш баланс: {$user_balance} у.е.");
+    //     $this->reply("Ваш баланс: {$user_balance} ₽.");
     // }
 
     public function instructionRow(): void
@@ -490,7 +490,7 @@ class Handler extends WebhookHandler
         try {
             $response = $this->chat
                 ->invoice("Пополнение баланса на {$amount} ₽")
-                ->description("Сумма к оплате: {$amount} ₽\nБудет зачислено: {$amount} у.е.")
+                ->description("Сумма к оплате: {$amount} ₽\nБудет зачислено: {$amount} ₽.")
                 ->currency('RUB')
                 ->addItem('Пополнение баланса', $amount * 100)
                 ->payload($payload)
@@ -637,8 +637,8 @@ class Handler extends WebhookHandler
             $newBalance = $this->getBalance();
             $this->chat->message(
                 "✅ *Оплата успешна!*\n\n" .
-                    "💰 Зачислено: {$amountRub} у.е.\n" .
-                    "💼 Текущий баланс: {$newBalance} у.е.\n"
+                    "💰 Зачислено: {$amountRub} ₽.\n" .
+                    "💼 Текущий баланс: {$newBalance} ₽.\n"
             )->keyboard(
                 Keyboard::make()->row([
                     Button::make('💼 Мой баланс')->action('showbalance')
@@ -672,7 +672,7 @@ class Handler extends WebhookHandler
         $text = "🤝 *Ваша реферальная ссылка:*\n`{$refLink}`\n\n";
         $text .= "📊 *Статистика:*\n";
         $text .= "— Приглашено пользователей: *{$invitedCount}*\n";
-        $text .= "— Заработано бонусов: *{$bonusEarned} у.е.*\n\n";
+        $text .= "— Заработано бонусов: *{$bonusEarned} ₽.*\n\n";
         $text .= "За каждого приглашённого вы получаете *" . config('vpn.referral_bonus_percent', 10) . "%* от суммы его пополнений!";
 
         $this->chat->message($text)
@@ -724,7 +724,7 @@ class Handler extends WebhookHandler
 
         if (!$chat) return;
 
-        $text = "🎉 Вам начислен бонус *{$bonus} у.е.* за пополнение баланса пользователем {$newUser->name}!\n\n";
+        $text = "🎉 Вам начислен бонус *{$bonus} ₽.* за пополнение баланса пользователем {$newUser->name}!\n\n";
         $text .= "Спасибо что приглашаете друзей!";
 
         $chat->message($text)->send();
