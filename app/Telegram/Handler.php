@@ -31,7 +31,7 @@ class Handler extends WebhookHandler
         $user = User::where('telegram_id', $from->id())->first();
 
         if ($user) {
-            $this->greetExisting($from);
+            $this->greetExisting();
             return;
         }
 
@@ -83,10 +83,8 @@ class Handler extends WebhookHandler
         $this->chat->message(config('bot.text.needahelp'))
             ->keyboard(
                 Keyboard::make()
-                    ->row([
-                        Button::make(config('bot.button.support'))
-                            ->url(config('bot.link.support'))
-                    ])
+                    ->row([Button::make(config('bot.button.support'))->url(config('bot.link.support'))])
+                    ->row($this->menuButton())
             )
             ->send();
     }
@@ -105,16 +103,17 @@ class Handler extends WebhookHandler
         $replacements = [
             '{price}' => $price,
             '{bonus}' => $bonus,
+            '{days}'  => $daysFree,
         ];
         $welcomeText = str_replace(array_keys($replacements), array_values($replacements), $welcomeText);
 
         // Формируем полное сообщение
-        $fullMessage = "👋 Привет, {$from->firstName()}!\n" . $welcomeText . "\n\n🎁 Вам начислено {$daysFree} дней бесплатно!";
+        $fullMessage = "👋 Привет, *{$from->firstName()}!*\n\n" . $welcomeText;
 
         $this->chat->message($fullMessage)
             ->keyboard(
                 Keyboard::make()
-                    ->row([Button::make(config('bot.text.creat'))->action('createCanal')])
+                    ->row([Button::make(config('bot.button.free_test'))->action('createCanal')])
                     ->row([
                         Button::make(config('bot.button.instruction'))->action('instructionsGagets'),
                         Button::make(config('bot.button.support'))->url(config('bot.link.support'))
@@ -150,8 +149,13 @@ class Handler extends WebhookHandler
     }
 
     /* ------------------------- 4. Приветствие существующего пользователя ------------------------- */
-    private function greetExisting(\DefStudio\Telegraph\DTO\User $from): void
+    private function greetExisting(): void
     {
+        // Работает как из /start (message), так и из кнопки (callbackQuery)
+        $from = $this->message?->from() ?? $this->callbackQuery?->from();
+        if (!$from) return;
+
+        $firstName = $from->firstName();
         $rows = [];
 
         // 1-я строка: «Создать» или «Мой канал»
@@ -178,10 +182,9 @@ class Handler extends WebhookHandler
         ];
 
         // 4-я строка: баланс и пополнение
-
         $rows[] = [
             Button::make('Баланс')->action('showbalance'),
-            Button::make('Пополнить')->action('addbalance')->param('uid', $this->message->from()->id()),
+            Button::make('Пополнить')->action('addbalance')->param('uid', $from->id()),
         ];
 
         // Собираем клавиатуру и отправляем
@@ -190,7 +193,7 @@ class Handler extends WebhookHandler
             $keyboard = $keyboard->row($row);
         }
 
-        $this->chat->message(__('Добро пожаловать, :name!', ['name' => $from->firstName()]))
+        $this->chat->message('📌 Главное меню')
             ->keyboard($keyboard)
             ->send();
     }
@@ -220,15 +223,14 @@ class Handler extends WebhookHandler
     {
         $user_balance = $this->getBalance();
         $this->chat->message(
-            "Ваш баланс: {$user_balance} у.е.\n" .
-                "Расход: " . config('vpn.default_price') . " у.е./сутки\n" .
-                "Ещё дней: " . ceil($user_balance / config('vpn.default_price'))
+            "💼 *Ваш баланс:* {$user_balance} у.е.\n" .
+                "📉 Расход: " . config('vpn.default_price') . " у.е./сутки\n" .
+                "⏳ Ещё дней: " . ceil($user_balance / config('vpn.default_price'))
         )
-
             ->keyboard(
-                Keyboard::make()->row([
-                    Button::make('Пополнить баланс')->action('addbalance'),
-                ])
+                Keyboard::make()
+                    ->row([Button::make('➕ Пополнить баланс')->action('addbalance')])
+                    ->row($this->menuButton())
             )
             ->send();
     }
@@ -236,47 +238,50 @@ class Handler extends WebhookHandler
     //instructionsGagets
     public function instructionsGagets(): void
     {
-        $this->chat->message('Настрой за 1 минуту!')
+        $this->chat->message('📋 Выбери своё устройство — настройка займёт 1 минуту:')
             ->keyboard(
                 Keyboard::make()
                     ->row([
-                        Button::make('Apple(iOS)')
-                            ->action('instructions_apple'),
-                        Button::make('Android')
-                            ->action('instructions_adroid'),
-                        Button::make('Windows')
-                            ->action('instructions_windows')
+                        Button::make('📱 iPhone / iPad')->action('instructions_apple'),
+                        Button::make('🍎 Mac')->action('instructions_mac'),
                     ])
                     ->row([
-                        Button::make('Mac')
-                            ->action('instructions_mac'),
-                        Button::make('Linux')
-                            ->url(config('bot.link.support')),
-                        Button::make('Роутер')
-                            ->url(config('bot.link.support'))
+                        Button::make('🤖 Android (Samsung и др.)')->action('instructions_adroid'),
                     ])
+                    ->row([
+                        Button::make('💬 Другое — написать в поддержку')->url(config('bot.link.support')),
+                    ])
+                    ->row($this->menuButton())
             )
             ->send();
     }
 
     public function instructions_apple(): void
     {
-        $this->chat->message(config('bot.text.instructions.apple'))->send();
+        $this->chat->message(config('bot.text.instructions.apple'))
+            ->keyboard(Keyboard::make()->row($this->menuButton()))
+            ->send();
     }
 
     public function instructions_adroid(): void
     {
-        $this->chat->message(config('bot.text.instructions.android'))->send();
+        $this->chat->message(config('bot.text.instructions.android'))
+            ->keyboard(Keyboard::make()->row($this->menuButton()))
+            ->send();
     }
 
     public function instructions_windows(): void
     {
-        $this->chat->message(config('bot.text.instructions.windows'))->send();
+        $this->chat->message(config('bot.text.instructions.windows'))
+            ->keyboard(Keyboard::make()->row($this->menuButton()))
+            ->send();
     }
 
     public function instructions_mac(): void
     {
-        $this->chat->message(config('bot.text.instructions.mac'))->send();
+        $this->chat->message(config('bot.text.instructions.mac'))
+            ->keyboard(Keyboard::make()->row($this->menuButton()))
+            ->send();
     }
 
     public function createCanal(): void
@@ -313,7 +318,9 @@ class Handler extends WebhookHandler
         $clients = $this->user_clients();
 
         if (empty($clients)) {
-            $this->reply('У вас пока нет VPN-каналов.');
+            $this->chat->message('У вас пока нет VPN-каналов.')
+                ->keyboard(Keyboard::make()->row($this->menuButton()))
+                ->send();
             return;
         }
 
@@ -327,10 +334,30 @@ class Handler extends WebhookHandler
             )
         )->implode("\n\n");
 
-        $this->chat->html($lines)->send();
+        $this->chat->html($lines)
+            ->keyboard(Keyboard::make()->row($this->menuButton()))
+            ->send();
     }
 
     /* ------------------------- 7. Вспомогательные методы ------------------------- */
+
+    /**
+     * Возвращает строку кнопок с «Главное меню» для добавления в любую клавиатуру.
+     * Использует /start — самый надёжный способ сбросить состояние.
+     */
+    protected function menuButton(): array
+    {
+        return [Button::make('🏠 Главное меню')->action('greetExistingAction')];
+    }
+
+    /**
+     * Публичный action для кнопки «Главное меню».
+     */
+    public function greetExistingAction(): void
+    {
+        $this->greetExisting();
+    }
+
     protected function user_id(): int
     {
         return User::getIdByTelegramId($this->chat->chat_id);
@@ -383,13 +410,14 @@ class Handler extends WebhookHandler
 
     public function instructionRow(): void
     {
-        $this->chat->message('Настрой за 1 минуту!')
+        $this->chat->message('📋 Настрой за 1 минуту!')
             ->keyboard(
                 Keyboard::make()
                     ->row([
                         Button::make(config('bot.button.instruction'))->action('instructionsGagets'),
                         Button::make(config('bot.button.support'))->url(config('bot.link.support'))
                     ])
+                    ->row($this->menuButton())
             )
             ->send();
     }
@@ -424,6 +452,7 @@ class Handler extends WebhookHandler
                         Button::make('2000 ₽')->action('sendInvoice')->param('amount', 2000),
                         Button::make('5000 ₽')->action('sendInvoice')->param('amount', 5000),
                     ])
+                    ->row($this->menuButton())
             )
             ->send();
     }
@@ -646,7 +675,9 @@ class Handler extends WebhookHandler
         $text .= "— Заработано бонусов: *{$bonusEarned} у.е.*\n\n";
         $text .= "За каждого приглашённого вы получаете *" . config('vpn.referral_bonus_percent', 10) . "%* от суммы его пополнений!";
 
-        $this->chat->message($text)->send();
+        $this->chat->message($text)
+            ->keyboard(Keyboard::make()->row($this->menuButton()))
+            ->send();
     }
 
     // Обработчик для кнопки копирования (опционально)
