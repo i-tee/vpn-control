@@ -176,7 +176,15 @@ class ChargeVpnClients extends Command
             Log::info('[BalanceNotify] Опция --force-notify:', ['value' => $forceNotify ? 'true' : 'false']);
 
             if ($forceNotify || $wasBlocked || $daysLeft < 7) {
-                $this->sendBalanceNotification($consumer, $balanceAfter, $daysLeft, $wasBlocked, $forceNotify);
+                try {
+                    $this->sendBalanceNotification($consumer, $balanceAfter, $daysLeft, $wasBlocked, $forceNotify);
+                } catch (\Throwable $e) {
+                    Log::error('[BalanceNotify] Не удалось отправить уведомление, продолжаем дальше', [
+                        'user_id' => $consumer->id,
+                        'telegram_id' => $consumer->telegram_id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
         }
 
@@ -188,36 +196,48 @@ class ChargeVpnClients extends Command
 
             $adminEmail = env('ADMIN_EMAIL');
             if ($adminEmail) {
-                Notification::route('mail', $adminEmail)
-                    ->notify(new ClientsBlocked($allBlockedClients));
-                $this->info('Notification about blocked clients sent to admin.');
-                Log::info('NOTIKI -- Notification about blocked clients sent to admin.', ['count' => $allBlockedClients->count()]);
+                try {
+                    Notification::route('mail', $adminEmail)
+                        ->notify(new ClientsBlocked($allBlockedClients));
+                    $this->info('Notification about blocked clients sent to admin.');
+                    Log::info('NOTIKI -- Notification about blocked clients sent to admin.', ['count' => $allBlockedClients->count()]);
+                } catch (\Throwable $e) {
+                    Log::error('NOTIKI -- Failed to send ClientsBlocked email', ['error' => $e->getMessage()]);
+                }
             }
         }
 
         // Отправляем сводку администратору в Telegram
-        $this->sendAdminSummary(
-            totalConsumers: $totalConsumers,
-            totalClients: $totalClients,
-            activeClients: $activeClientsTotal,
-            inactiveClients: $inactiveClientsTotal,
-            totalCharged: $totalCharged,
-            blockedToday: $allBlockedClients->count()
-        );
+        try {
+            $this->sendAdminSummary(
+                totalConsumers: $totalConsumers,
+                totalClients: $totalClients,
+                activeClients: $activeClientsTotal,
+                inactiveClients: $inactiveClientsTotal,
+                totalCharged: $totalCharged,
+                blockedToday: $allBlockedClients->count()
+            );
+        } catch (\Throwable $e) {
+            Log::error('[AdminSummary] Не удалось отправить сводку администратору в Telegram', ['error' => $e->getMessage()]);
+        }
 
         // Отправляем сводку администратору на email
         $adminEmail = env('ADMIN_EMAIL');
         if ($adminEmail) {
-            Notification::route('mail', $adminEmail)
-                ->notify(new \App\Notifications\DailySummary(
-                    totalConsumers: $totalConsumers,
-                    totalClients: $totalClients,
-                    activeClients: $activeClientsTotal,
-                    inactiveClients: $inactiveClientsTotal,
-                    totalCharged: $totalCharged,
-                    blockedToday: $allBlockedClients->count()
-                ));
-            Log::info('[DailySummary] Сводка отправлена на email', ['email' => $adminEmail]);
+            try {
+                Notification::route('mail', $adminEmail)
+                    ->notify(new \App\Notifications\DailySummary(
+                        totalConsumers: $totalConsumers,
+                        totalClients: $totalClients,
+                        activeClients: $activeClientsTotal,
+                        inactiveClients: $inactiveClientsTotal,
+                        totalCharged: $totalCharged,
+                        blockedToday: $allBlockedClients->count()
+                    ));
+                Log::info('[DailySummary] Сводка отправлена на email', ['email' => $adminEmail]);
+            } catch (\Throwable $e) {
+                Log::error('[DailySummary] Не удалось отправить сводку администратору на email', ['error' => $e->getMessage()]);
+            }
         }
 
         $this->info("Daily charge process completed. Total charged: {$totalCharged}");
