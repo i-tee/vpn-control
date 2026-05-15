@@ -16,6 +16,7 @@ use App\Notifications\DailySummary;
 use DefStudio\Telegraph\Models\TelegraphChat;
 use DefStudio\Telegraph\Keyboard\Keyboard;
 use DefStudio\Telegraph\Keyboard\Button;
+use App\Support\TelegraphRetry;
 
 class ChargeVpnClients extends Command
 {
@@ -322,9 +323,12 @@ class ChargeVpnClients extends Command
             Button::make('💳 Пополнить')->action('addbalance')->param('uid', $user->telegram_id)
         ]);
 
-        $response = $chat->message($text)
-            ->keyboard($keyboard)
-            ->send();
+        $response = TelegraphRetry::attempt(
+            fn() => $chat->message($text)->keyboard($keyboard)->send(),
+            5,
+            500,
+            'BalanceNotify user_id=' . $user->id
+        );
 
         if ($response->json('ok') === true) {
             Log::info('[BalanceNotify] Уведомление успешно отправлено', [
@@ -386,7 +390,12 @@ class ChargeVpnClients extends Command
         $text .= "💰 Списано сегодня: *{$totalCharged} у.е.*\n";
         $text .= "🚫 Заблокировано сегодня: *{$blockedToday}*\n";
 
-        $response = $chat->message($text)->send();
+        $response = TelegraphRetry::attempt(
+            fn() => $chat->message($text)->send(),
+            5,
+            500,
+            'AdminSummary'
+        );
 
         if ($response->json('ok') === true) {
             Log::info('[AdminSummary] Сводка успешно отправлена администратору');
