@@ -14,6 +14,7 @@ use DefStudio\Telegraph\DTO\PreCheckoutQuery;
 use DefStudio\Telegraph\DTO\SuccessfulPayment;
 use DefStudio\Telegraph\Models\TelegraphChat;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\DB;
 
 class Handler extends WebhookHandler
 {
@@ -24,14 +25,17 @@ class Handler extends WebhookHandler
         $text = $this->message->text();
 
         if ($from->isBot()) {
-            $this->reply('Боты не могут регистрироваться.');
+            $this->safeSend(fn() => $this->reply('Боты не могут регистрироваться.'), 'start:isBot');
             return;
         }
 
         $user = User::where('telegram_id', $from->id())->first();
 
         if ($user) {
-            $this->greetExisting();
+            // Идемпотентность: если бонус когда-то не успел начислиться (например,
+            // первый /start упал на send() и Telegram ретраил webhook) — догоняем.
+            $this->ensureEntryBonus($user);
+            $this->safeSend(fn() => $this->greetExisting(), 'start:greetExisting');
             return;
         }
 
@@ -52,14 +56,42 @@ class Handler extends WebhookHandler
             }
         }
 
-        // Регистрируем нового пользователя с referrer_id
-        $user = $this->registerUser($from, $referrerId);
-        $this->greetNewcomer($from);
-        $this->awardBonus($user);
+        // Регистрация + бонус — атомарно, без сетевых вызовов. Если упадёт —
+        // откатятся обе записи, на следующем /start всё повторится с нуля.
+        $user = DB::transaction(function () use ($from, $referrerId) {
+            $newUser = $this->registerUser($from, $referrerId);
+            $this->createEntryBonus($newUser);
+            return $newUser;
+        });
 
-        // Если есть реферер, можно отправить ему уведомление (опционально)
+        // Все Telegram-сообщения после коммита БД и в safeSend, чтобы исключение
+        // от api.telegram.org не валило весь webhook (иначе Telegram ретраит и
+        // на ретраях greetExisting → return → бонус не догоняется до новой
+        // ветки идемпотентности выше).
+        $this->safeSend(fn() => $this->greetNewcomer($from), 'start:greetNewcomer');
+        $this->safeSend(fn() => $this->reply("🎉 Вам начислен вступительный бонус " . config('vpn.entry_bonus') . " у.е.!"), 'start:bonusReply');
+
         if ($referrerId) {
-            $this->notifyReferrerAboutNewUser($referrerId, $user);
+            $this->safeSend(fn() => $this->notifyReferrerAboutNewUser($referrerId, $user), 'start:notifyReferrer');
+        }
+    }
+
+    /**
+     * Запустить замыкание (обычно отправку сообщения в Telegram) и проглотить
+     * любые исключения, чтобы не валить webhook-handler. Если webhook падает с
+     * 500, Telegram повторяет его до 3 раз — это приводит к дублированной
+     * обработке и пропавшим бонусам (см. инцидент 2026-05-26).
+     */
+    private function safeSend(\Closure $fn, string $context = ''): void
+    {
+        try {
+            $fn();
+        } catch (\Throwable $e) {
+            Log::warning('[Handler::safeSend] Send failed, swallowed to keep webhook 200', [
+                'context' => $context,
+                'chat_id' => $this->chat->chat_id ?? null,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 
@@ -199,23 +231,56 @@ class Handler extends WebhookHandler
     }
 
     /* ------------------------- 5. Начисление вступительного бонуса ------------------------- */
-    private function awardBonus(User $user): void
+    /**
+     * Создать deposit-транзакцию вступительного бонуса. Без сетевых вызовов —
+     * вызывается внутри DB::transaction() в start(). Если упадёт, откатится
+     * и регистрация пользователя.
+     */
+    private function createEntryBonus(User $user): void
     {
-        $bonus = config('vpn.entry_bonus');
-        try {
-            Transaction::createTransaction(
-                userId: $user->id,
-                type: 'deposit',
-                amount: $bonus,
-                comment: 'Вступительный бонус'
-            );
-            $this->reply("🎉 Вам начислен вступительный бонус {$bonus} у.е.!");
-        } catch (\Exception $e) {
-            Log::error('Ошибка начисления бонуса', [
-                'user_id' => $user->id,
-                'error'   => $e->getMessage(),
-            ]);
+        $bonus = (float) config('vpn.entry_bonus');
+        Transaction::createTransaction(
+            userId: $user->id,
+            type: 'deposit',
+            amount: $bonus,
+            subjectType: 'entry_bonus',
+            comment: 'Вступительный бонус'
+        );
+        Log::info('[EntryBonus] Начислен', ['user_id' => $user->id, 'amount' => $bonus]);
+    }
+
+    /**
+     * Идемпотентно гарантировать, что у пользователя есть Entry Bonus. Если
+     * нет — начисляет и шлёт уведомление. Покрывает случай, когда юзер
+     * зарегался во время сетевого сбоя и не получил бонус (см. инцидент с
+     * vladislava/valentina 2026-05-26).
+     */
+    private function ensureEntryBonus(User $user): void
+    {
+        $alreadyGranted = Transaction::where('user_id', $user->id)
+            ->where('subject_type', 'entry_bonus')
+            ->where('is_active', true)
+            ->exists();
+
+        if ($alreadyGranted) {
+            return;
         }
+
+        try {
+            $this->createEntryBonus($user);
+        } catch (\Throwable $e) {
+            Log::error('[EntryBonus] Не удалось начислить запоздавший бонус', [
+                'user_id' => $user->id,
+                'error' => $e->getMessage(),
+            ]);
+            return;
+        }
+
+        $bonus = config('vpn.entry_bonus');
+        $this->safeSend(
+            fn() => $this->reply("🎉 Вам начислен вступительный бонус {$bonus} у.е.!"),
+            'ensureEntryBonus:reply'
+        );
     }
 
     /* ------------------------- 6. Action-методы (кнопки) ------------------------- */
