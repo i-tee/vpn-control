@@ -1,4 +1,13 @@
-version: "3.8"
+# Порты вынесены в переменные, чтобы проект мог работать параллельно с
+# другими локальными окружениями. Дефолты подобраны так, чтобы не пересекаться
+# с checklist-expert (тот занимает 80, 3306, 1025, 8025).
+#
+# Переопределить можно через .env:
+#   HTTP_PORT=8080  MAILPIT_UI_PORT=8125  MAILPIT_SMTP_PORT=1125  REDIS_PORT_HOST=6479
+#
+# Внутри docker-сети порты остаются стандартными (mailpit:1025, redis:6379),
+# поэтому MAIL_PORT / REDIS_PORT в .env менять НЕ нужно — приложение ходит
+# к контейнерам по именам, а не через хостовой проброс.
 
 services:
     # Контейнер с приложением (PHP + Laravel)
@@ -20,7 +29,8 @@ services:
         container_name: gatekeeper-nginx
         restart: unless-stopped
         ports:
-            - "8080:80"
+            # 8080 — на него смотрит ngrok, менять осторожно
+            - "${HTTP_PORT:-8080}:80"
         volumes:
             - ./:/var/www/html
             - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
@@ -33,7 +43,7 @@ services:
         container_name: gatekeeper-redis
         restart: unless-stopped
         ports:
-            - "6379:6379"
+            - "${REDIS_PORT_HOST:-6479}:6379"
 
     # 📧 Контейнер для тестирования почты (Mailpit)
     mailpit:
@@ -41,8 +51,8 @@ services:
         container_name: gatekeeper-mailpit
         restart: unless-stopped
         ports:
-            - "8025:8025" # Веб-интерфейс Mailpit (http://localhost:8025)
-            - "1025:1025" # SMTP порт (уже указан в .env)
+            - "${MAILPIT_UI_PORT:-8125}:8025"   # Веб-интерфейс (http://localhost:8125)
+            - "${MAILPIT_SMTP_PORT:-1125}:1025" # SMTP с хоста
         environment:
             MP_SMTP_AUTH_ACCEPT_ANY: "true" # Принимать любой логин/пароль
             MP_SMTP_AUTH_ALLOW_INSECURE: "true" # Без шифрования (для локалки)

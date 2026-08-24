@@ -15,6 +15,7 @@ use DefStudio\Telegraph\DTO\SuccessfulPayment;
 use DefStudio\Telegraph\Models\TelegraphChat;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
+use App\Support\Pricing;
 
 class Handler extends WebhookHandler
 {
@@ -69,7 +70,7 @@ class Handler extends WebhookHandler
         // на ретраях greetExisting → return → бонус не догоняется до новой
         // ветки идемпотентности выше).
         $this->safeSend(fn() => $this->greetNewcomer($from), 'start:greetNewcomer');
-        $this->safeSend(fn() => $this->reply("🎉 Вам начислен вступительный бонус " . config('vpn.entry_bonus') . " у.е.!"), 'start:bonusReply');
+        $this->safeSend(fn() => $this->reply("🎉 Вам начислен вступительный бонус " . Pricing::entryBonus() . " у.е.!"), 'start:bonusReply');
 
         if ($referrerId) {
             $this->safeSend(fn() => $this->notifyReferrerAboutNewUser($referrerId, $user), 'start:notifyReferrer');
@@ -124,9 +125,9 @@ class Handler extends WebhookHandler
     /* ------------------------- 2. Приветствие нового пользователя ------------------------- */
     private function greetNewcomer(\DefStudio\Telegraph\DTO\User $from): void
     {
-        $price = config('vpn.default_price', 12);
-        $bonus = config('vpn.entry_bonus', 360);
-        $daysFree = ceil($bonus / $price); // дней бесплатно
+        $price = Pricing::default();
+        $bonus = Pricing::entryBonus();
+        $daysFree = Pricing::freeDays();
 
         // Получаем текст приветствия из конфига
         $welcomeText = config('bot.text.welcome');
@@ -238,7 +239,7 @@ class Handler extends WebhookHandler
      */
     private function createEntryBonus(User $user): void
     {
-        $bonus = (float) config('vpn.entry_bonus');
+        $bonus = Pricing::entryBonus();
         Transaction::createTransaction(
             userId: $user->id,
             type: 'deposit',
@@ -276,7 +277,7 @@ class Handler extends WebhookHandler
             return;
         }
 
-        $bonus = config('vpn.entry_bonus');
+        $bonus = Pricing::entryBonus();
         $this->safeSend(
             fn() => $this->reply("🎉 Вам начислен вступительный бонус {$bonus} у.е.!"),
             'ensureEntryBonus:reply'
@@ -287,10 +288,11 @@ class Handler extends WebhookHandler
     public function showbalance(): void
     {
         $user_balance = $this->getBalance();
+        $dailyCost = Pricing::dailyCostForUser($this->user_id());
         $this->chat->message(
             "💼 *Ваш баланс:* {$user_balance} у.е.\n" .
-                "📉 Расход: " . config('vpn.default_price') . " у.е./сутки\n" .
-                "⏳ Ещё дней: " . ceil($user_balance / config('vpn.default_price'))
+                "📉 Расход: {$dailyCost} у.е./сутки\n" .
+                "⏳ Ещё дней: " . Pricing::daysLeft($user_balance, $dailyCost)
         )
             ->keyboard(
                 Keyboard::make()
@@ -383,8 +385,8 @@ class Handler extends WebhookHandler
     public function welcome()
     {
 
-        $price = config('vpn.default_price', 12);
-        $bonus = config('vpn.entry_bonus', 360); // значение по умолчанию, если ключ отсутствует
+        $price = Pricing::default();
+        $bonus = Pricing::entryBonus();
 
         $welcome = config('bot.text.welcome');
 
@@ -392,6 +394,7 @@ class Handler extends WebhookHandler
         $replacements = [
             '{price}' => $price,
             '{bonus}' => $bonus,
+            '{days}'  => Pricing::freeDays(),
         ];
         $welcome = str_replace(array_keys($replacements), array_values($replacements), $welcome);
 

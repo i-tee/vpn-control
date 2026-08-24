@@ -17,6 +17,7 @@ use DefStudio\Telegraph\Models\TelegraphChat;
 use DefStudio\Telegraph\Keyboard\Keyboard;
 use DefStudio\Telegraph\Keyboard\Button;
 use App\Support\TelegraphRetry;
+use App\Support\Pricing;
 
 class ChargeVpnClients extends Command
 {
@@ -89,8 +90,7 @@ class ChargeVpnClients extends Command
             // Расчёт суммы списания по каждому клиенту
             foreach ($activeClients as $client) {
                 $serverName = $client->server_name;
-                $serversConfig = Config::get('vpn.servers', []);
-                $price = $serversConfig[$serverName]['price'] ?? Config::get('vpn.default_price', 1);
+                $price = Pricing::forServer($serverName);
                 $totalCharge += $price;
 
                 if (!isset($serverDetails[$serverName])) {
@@ -167,8 +167,10 @@ class ChargeVpnClients extends Command
                 }
             }
 
-            // Рассчитываем количество дней до блокировки (положительный остаток)
-            $daysLeft = $balanceAfter > 0 ? floor($balanceAfter / config('vpn.default_price')) : 0;
+            // Дней до блокировки — по фактическому суточному расходу этого юзера
+            // ($totalCharge уже посчитан выше по его активным клиентам), а не по
+            // базовой цене: иначе у юзера с двумя каналами прогноз завышался вдвое.
+            $daysLeft = Pricing::daysLeft($balanceAfter, $totalCharge);
             $wasBlocked = $balanceAfter < 0; // пользователь был заблокирован, если баланс отрицательный
 
             // Отправляем уведомление, если баланс меньше 7 дней или если заблокирован
