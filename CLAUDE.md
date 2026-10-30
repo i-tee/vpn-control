@@ -18,18 +18,29 @@
 `Dockerfile`, `docker-compose.yml`, `nginx/` — только для локальной разработки,
 прод работает без них.
 
-**Локальные порты** (разведены с checklist-expert, который держит 80/3306/1025/8025):
+**Локальные порты** — отдельный диапазон 1xxxx, чтобы не пересекаться с другими
+локальными проектами (avicenna тоже занимает 8080 и 1025/8025):
 
 | Сервис | Порт на хосте | Переменная |
 |---|---|---|
-| nginx | **8080** (на него смотрит ngrok) | `HTTP_PORT` |
-| mailpit UI | **8125** | `MAILPIT_UI_PORT` |
-| mailpit SMTP | **1125** | `MAILPIT_SMTP_PORT` |
-| redis | **6479** | `REDIS_PORT_HOST` |
+| nginx | **18080** (на него смотрит ngrok) | `HTTP_PORT` |
+| mailpit UI | **18125** | `MAILPIT_UI_PORT` |
+| mailpit SMTP | **11125** | `MAILPIT_SMTP_PORT` |
+| redis | **16479** | `REDIS_PORT_HOST` |
 
 Внутри docker-сети порты стандартные (`mailpit:1025`, `redis:6379`) — приложение
 ходит к контейнерам по именам, поэтому `MAIL_PORT`/`REDIS_PORT` в `.env` менять
 не нужно.
+
+ngrok запускать так: `ngrok http 18080`.
+
+После смены портов в compose контейнеры надо пересоздать
+(`docker compose up -d --force-recreate`), обычный `restart` их не применит.
+
+Если контейнер с пробросом портов запустить сразу после остановки другого
+проекта с теми же портами, он может подняться без docker-сети (пустой
+`NetworkSettings.Networks`), и nginx падает с `host not found in upstream "app"`.
+Лечится тем же `--force-recreate`.
 
 ## Топология сети
 
@@ -66,7 +77,8 @@
 - **`App\Models\Client`** — VPN-канал на сервере: name (логин), password
   (открытым текстом), server_name, is_active, user_id.
 - **`App\Models\Transaction`** — deposit / withdraw, amount, subject_type
-  (`entry_bonus`, `vpn_service`, `yookassa`, `referral_bonus` или **null** при
+  (`entry_bonus`, `vpn_service`, `yookassa`, `referral_bonus`,
+  `referral_activation` или **null** при
   ручном создании через админку), comment, is_active.
   Баланс = `SUM(deposit) - SUM(withdraw)` по активным транзакциям.
 
@@ -103,6 +115,9 @@ transactions  id, user_id(FK cascade), type ENUM(deposit|withdraw),
 ```php
 'default_price' => 20,  // цена за клиент в сутки — единственный источник правды
 'entry_bonus'   => 100, // вступительный бонус (при цене 20 = 5 дней теста)
+'referral_invitee_bonus'    => 200, // бонус приглашённому по ссылке вместо entry_bonus (при цене 20 = 10 дней)
+'referral_activation_bonus' => 100, // бонус приглашающему, когда приглашённый прошёл первое ежедневное списание
+'referral_bonus_percent'    => 20,  // % от каждого пополнения приглашённого
 ```
 
 У сервера в `servers[]` ключ `price` указывается **только если цена отличается**
@@ -117,6 +132,10 @@ transactions  id, user_id(FK cascade), type ENUM(deposit|withdraw),
 | `Pricing::forServer($name)` | цена сервера, с фолбэком на базовую |
 | `Pricing::entryBonus()` | вступительный бонус |
 | `Pricing::freeDays()` | сколько дней теста даёт бонус (для `{days}` в тексте) |
+| `Pricing::referralInviteeBonus()` | бонус приглашённому по реферальной ссылке (вместо `entryBonus`) |
+| `Pricing::referralActivationBonus()` | бонус приглашающему за активацию друга (первое списание) |
+| `Pricing::referralPercent()` | % от пополнений приглашённого, который получает приглашающий |
+| `Pricing::referralFreeDays()` | сколько дней теста даёт реферальный бонус (для `{invitee_days}` в тексте) |
 | `Pricing::dailyCostForUser($user)` | суточный расход юзера = сумма по его активным клиентам |
 | `Pricing::daysLeft($balance, $dailyCost)` | сколько полных суток проживёт баланс |
 
@@ -174,6 +193,47 @@ start():
 YooKassa-инвойсы через Telegram. `handlePreCheckoutQuery` подтверждает,
 `handleSuccessfulPayment` создаёт `deposit` и при наличии referrer'а начисляет
 % бонус (`referral_bonus_percent`, сейчас 20%).
+
+## Реферальная программа
+
+Ссылка `https://t.me/<bot>?start=ref_<id>`, где `<id>` — `users.id` приглашающего. Работает в три шага:
+
+1. **Приглашённый** получает `referral_invitee_bonus` вместо `entry_bonus` при регистрации (`start()` → `createEntryBonus($user, byInvite: true)`). `subject_type` остаётся `entry_bonus`, поэтому идемпотентность `ensureEntryBonus` работает как прежде; она тоже учитывает `referrer_id`.
+2. **Приглашающий** получает `referral_activation_bonus`, когда приглашённый **прошёл первое ежедневное списание**. Выплату делает крон `vpn:daily-charge`, метод `grantReferralActivationBonus`. Транзакция: `subject_type='referral_activation'`, `subject_id = id друга`. Одна выплата на пару навсегда.
+3. **Приглашающий** получает `referral_bonus_percent`% с каждого пополнения друга: `subject_type='referral_bonus'`, начисляет `handleSuccessfulPayment`.
+
+Почему бонус приглашающему привязан к списанию, а не к регистрации: защита от самонакрутки через несколько Telegram-аккаунтов. Регистрация ничего не стоит и её можно наштамповать с кучи аккаунтов; первое списание означает, что друг реально потратил деньги на VPN.
+
+### Где бот напоминает о программе
+
+| Место | Что показывается | Код |
+|---|---|---|
+| Главное меню → «🤝 Реферальная программа» | экран `text.referral.program`: ссылка, приглашено, «Заработано на друзьях», кнопка «Поделиться» | `Handler::ref()` |
+| «💼 Баланс» | строка «🤝 Заработано на друзьях» и кнопка «Подарить» | `Handler::showbalance()` |
+| После успешной оплаты | абзац `text.referral.after_payment` и кнопка «Поделиться» | `Handler::handleSuccessfulPayment()` |
+| Крон: «осталось N дней» и «заблокирован» | абзац `text.referral.nudge` (у предупреждения и блокировки) и кнопка «Подарить» | `ChargeVpnClients::sendBalanceNotification()` |
+| Приглашающему: друг зарегистрировался | сообщение и кнопка «Поделиться» | `Handler::notifyReferrerAboutNewUser()` |
+| Приглашающему: друг пополнил баланс | сообщение о проценте с пополнения | `Handler::notifyReferrerAboutBonus()` |
+| Приглашающему: друг прошёл первое списание | сообщение о бонусе и кнопка «Подарить» | `ChargeVpnClients::grantReferralActivationBonus()` |
+
+Кнопки «Поделиться» и «Подарить» — url-кнопки на `https://t.me/share/url?url=...&text=...`. Telegram открывает выбор чата с готовым текстом `text.referral.share` (плейсхолдеры `{days}` и `{link}`), без копирования ссылки. Хелперы `referralLink`, `shareUrl`, `giftButton` продублированы в `Handler` и `ChargeVpnClients` (у команды нет доступа к Handler; в `Handler` есть ещё `shareButton`). Меняешь формат ссылки или текст `share` — правь в обоих местах.
+
+Тексты все в `config/bot.php`: `text.referral.{share,nudge,after_payment,program}` и `button.{share,gift}`. Плейсхолдеры в фигурных скобках (`{days}`, `{bonus}`, `{percent}`, `{link}`, `{invitee_days}`, `{free_days}`, `{invited}`, `{earned}`) подставляются в коде через `str_replace`; в конфиге остаются как есть.
+
+### Сводка админу
+
+В Telegram-сводке крона (`sendAdminSummary`) три новые строки:
+- `🆕 Новых за сутки` — consumer'ы, созданные за последние 24 часа;
+- `🔗 из них по ссылке` — у которых задан `referrer_id`;
+- `🎁 Реферальных бонусов сегодня` — выплаты `referral_activation` в этом прогоне.
+
+### ⚠️ Подводные камни
+
+- **`TELEGRAPH_BOT_USERNAME` читается через `env()`** в `Handler::referralLink()` и `ChargeVpnClients::referralLink()`, в `config/telegraph.php` ключа нет. Это ещё одно место из списка «не делать `config:cache`» (см. Деплой). Без username ссылка превращается в `https://t.me/?start=ref_N`.
+- **«Заработано на друзьях»** = сумма активных (`is_active=true`) транзакций пользователя с `subject_type IN ('referral_bonus','referral_activation')`. Отменённые через админку выплаты в сумму не входят.
+- **Идемпотентность выплаты за активацию не смотрит на `is_active`**: если админ отменил транзакцию `referral_activation`, повторно её не выдаст, запись с этим `subject_id` уже есть.
+- **Выплата не зависит от знака баланса друга**: `grantReferralActivationBonus` вызывается сразу после списания, до проверки `balanceAfter < 0`.
+- Транзакция `referral_activation` создаётся **внутри цикла крона** как `deposit` и триггерит `TransactionObserver`: письмо `NewDeposit` админу и `checkBalanceAndManageClients()` для приглашающего. Если после этого баланс приглашающего стал ≥ 0, его заблокированные каналы **активируются**. Это ожидаемо, но в логах выглядит как внезапная активация.
 
 ## ⚠️ Observers — скрытый слой автоматики
 
@@ -363,8 +423,8 @@ php artisan migrate           # если менялись миграции
 # composer install — только если менялись зависимости
 ```
 
-🚨 **Никогда не делать `php artisan config:cache` на этом проекте.** В коде 13
-мест читают `env()` напрямую в обход `config()` — `ADMIN_EMAIL`,
+🚨 **Никогда не делать `php artisan config:cache` на этом проекте.** В коде в 15
+местах читают `env()` напрямую в обход `config()` — `ADMIN_EMAIL`,
 `TELEGRAPH_BOT_NOTIFY_ID`, `ADMIN_CHAT_ID`, `TELEGRAPH_BOT_TOKEN`,
 `TELEGRAPH_BOT_USERNAME` (в ChargeVpnClients, Handler, VpnService и всех трёх
 обсерверах). После кеширования конфига `env()` возвращает **null**, и все
@@ -498,7 +558,7 @@ done
 Ничего из этого не горит, но знать полезно. Примерно в порядке серьёзности:
 
 1. **`clients.is_active` не в миграциях** — окружение с нуля не поднимется.
-2. **`env()` вместо `config()` в 13 местах** — `config:cache` молча ломает все
+2. **`env()` вместо `config()` в 15 местах** — `config:cache` молча ломает все
    уведомления. См. раздел Деплой.
 3. **Боевой IP StrongSwan в git** — `config/vpn.php` содержит host и порт
    открытым текстом, репозиторий публичный. (`secret_key` уже переведён на
@@ -541,6 +601,7 @@ done
 - `TelegramProxy` + `TELEGRAM_PROXY_*` для роутинга исходящих через SOCKS5.
 - Caddy на внешней VPS как reverse-proxy для входящих webhook'ов.
 - Переезд внешней VPS с переносом обеих ролей (Caddy + SOCKS5).
+- Реферальная программа: повышенный бонус приглашённому, бонус приглашающему за активацию друга (выдаёт крон), кнопка «Поделиться» в один тап, напоминания в точках контакта.
 
 ## Полезные команды
 

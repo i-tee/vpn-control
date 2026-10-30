@@ -13,6 +13,9 @@ use App\Models\User;
  *   - servers.<name>.price — переопределение цены для конкретного сервера,
  *     указывается ТОЛЬКО если она отличается от default_price
  *   - entry_bonus — вступительный бонус
+ *   - referral_invitee_bonus — бонус приглашённому по реферальной ссылке (вместо entry_bonus)
+ *   - referral_activation_bonus — бонус приглашающему за активированного друга
+ *   - referral_bonus_percent — % от пополнений приглашённого
  *
  * Раньше цена читалась через config() в шести местах с тремя разными
  * фолбэками (12, 1, 360), а дни считались то через ceil, то через floor —
@@ -65,6 +68,40 @@ class Pricing
     public static function freeDays(): int
     {
         return (int) floor(self::entryBonus() / self::default());
+    }
+
+    /**
+     * Вступительный бонус тому, кто пришёл по реферальной ссылке.
+     */
+    public static function referralInviteeBonus(): float
+    {
+        return (float) config('vpn.referral_invitee_bonus', 0);
+    }
+
+    /**
+     * Бонус приглашающему, когда приглашённый создал канал
+     * и прошёл первое ежедневное списание.
+     */
+    public static function referralActivationBonus(): float
+    {
+        return (float) config('vpn.referral_activation_bonus', 0);
+    }
+
+    /**
+     * Процент от пополнений приглашённого, который получает приглашающий.
+     */
+    public static function referralPercent(): float
+    {
+        return (float) config('vpn.referral_bonus_percent', 0);
+    }
+
+    /**
+     * Сколько дней бесплатного теста получает приглашённый по реферальной ссылке.
+     * Используется в текстах партнёрки ({invitee_days}).
+     */
+    public static function referralFreeDays(): int
+    {
+        return (int) floor(self::referralInviteeBonus() / self::default());
     }
 
     /**

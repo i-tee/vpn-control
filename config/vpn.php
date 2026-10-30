@@ -21,6 +21,10 @@ return [
 
     'referral_bonus_percent' => 20, // % от суммы пополнения приглашённого
 
+    'referral_invitee_bonus' => 200, // Бонус тому, кто пришёл по реферальной ссылке, вместо entry_bonus (при цене 20 = 10 дней)
+
+    'referral_activation_bonus' => 100, // Бонус приглашающему, когда приглашённый создал канал и прошёл первое ежедневное списание
+
     'default_server' => 'x.xab.su',
 
     'servers' => [

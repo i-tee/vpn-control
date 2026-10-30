@@ -43,6 +43,14 @@ class ChargeVpnClients extends Command
             $query->where('slug', 'consumer');
         })->count();
 
+        // Новые consumer'ы за сутки (и сколько из них пришло по реферальной ссылке)
+        $newToday = User::whereHas('roles', function ($query) {
+            $query->where('slug', 'consumer');
+        })->where('created_at', '>=', now()->subDay())->count();
+        $newViaReferral = User::whereHas('roles', function ($query) {
+            $query->where('slug', 'consumer');
+        })->where('created_at', '>=', now()->subDay())->whereNotNull('referrer_id')->count();
+
         $totalClients = Client::count();
         $activeClientsTotal = Client::where('is_active', true)->count();
         $inactiveClientsTotal = Client::where('is_active', false)->count();
@@ -70,6 +78,7 @@ class ChargeVpnClients extends Command
         $totalCharged = 0;
         $allBlockedClients = new Collection();
         $totalActiveClients = 0; // для статистики по обработанным
+        $referralBonusesToday = 0; // реферальные бонусы за активацию, выданные в этом прогоне
 
         foreach ($consumers as $consumer) {
             $activeClients = Client::where('user_id', $consumer->id)
@@ -124,6 +133,11 @@ class ChargeVpnClients extends Command
             $this->info("Charged {$totalCharge} from consumer #{$consumer->id}");
             Log::info("NOTIKI -- Charged {$totalCharge} from consumer #{$consumer->id}");
             $totalCharged += $totalCharge;
+
+            // Приглашённый реально потратил деньги на VPN — платим бонус пригласившему
+            if ($this->grantReferralActivationBonus($consumer)) {
+                $referralBonusesToday++;
+            }
 
             // Проверяем баланс после списания
             $balanceAfter = $this->getUserBalance($consumer);
@@ -218,7 +232,10 @@ class ChargeVpnClients extends Command
                 activeClients: $activeClientsTotal,
                 inactiveClients: $inactiveClientsTotal,
                 totalCharged: $totalCharged,
-                blockedToday: $allBlockedClients->count()
+                blockedToday: $allBlockedClients->count(),
+                newToday: $newToday,
+                newViaReferral: $newViaReferral,
+                referralBonusesToday: $referralBonusesToday
             );
         } catch (\Throwable $e) {
             Log::error('[AdminSummary] Не удалось отправить сводку администратору в Telegram', ['error' => $e->getMessage()]);
@@ -298,6 +315,7 @@ class ChargeVpnClients extends Command
             $text = "🚫 *Ваш VPN-доступ заблокирован*\n\n";
             $text .= "💰 Баланс: {$balance} у.е.\n";
             $text .= "Для восстановления доступа пополните баланс.";
+            $text .= "\n\n" . $this->referralNudge();
         } elseif ($daysLeft < 7 || $force) {
             if ($force && $daysLeft >= 7) {
                 $text = "ℹ️ *Тестовое уведомление*\n\n";
@@ -309,6 +327,7 @@ class ChargeVpnClients extends Command
                 $text .= "У вас осталось *{$daysLeft} " . $this->pluralDays($daysLeft) . "* до блокировки сервиса.\n";
                 $text .= "💰 Баланс: {$balance} у.е.\n";
                 $text .= "Рекомендуем пополнить баланс.";
+                $text .= "\n\n" . $this->referralNudge();
             }
         } else {
             Log::info('[BalanceNotify] Условия не выполнены, отправка не требуется', [
@@ -321,9 +340,11 @@ class ChargeVpnClients extends Command
 
         Log::info('[BalanceNotify] Попытка отправить сообщение', ['text' => $text]);
 
-        $keyboard = Keyboard::make()->row([
-            Button::make('💳 Пополнить')->action('addbalance')->param('uid', $user->telegram_id)
-        ]);
+        $keyboard = Keyboard::make()
+            ->row([
+                Button::make('💳 Пополнить')->action('addbalance')->param('uid', $user->telegram_id)
+            ])
+            ->row([$this->giftButton($user)]);
 
         $response = TelegraphRetry::attempt(
             fn() => $chat->message($text)->keyboard($keyboard)->send(),
@@ -346,6 +367,154 @@ class ChargeVpnClients extends Command
     }
 
     /**
+     * Абзац-подсказка про реферальную программу (подстановка цен только через Pricing)
+     */
+    private function referralNudge(): string
+    {
+        return str_replace(
+            ['{days}', '{bonus}', '{percent}'],
+            [Pricing::referralFreeDays(), Pricing::referralActivationBonus(), Pricing::referralPercent()],
+            config('bot.text.referral.nudge')
+        );
+    }
+
+    /**
+     * Реферальная ссылка юзера. Username бота читается через env() — так же, как в
+     * Handler::ref(): ключа username в config/telegraph.php нет.
+     */
+    private function referralLink(User $user): string
+    {
+        $botUsername = env('TELEGRAPH_BOT_USERNAME');
+
+        return "https://t.me/{$botUsername}?start=ref_{$user->id}";
+    }
+
+    /**
+     * Ссылка «Поделиться» — открывает в Telegram выбор чата с готовым текстом-приглашением
+     */
+    private function shareUrl(User $user): string
+    {
+        $link = $this->referralLink($user);
+        $text = str_replace(
+            ['{days}', '{link}'],
+            [Pricing::referralFreeDays(), $link],
+            config('bot.text.referral.share')
+        );
+
+        return 'https://t.me/share/url?url=' . rawurlencode($link) . '&text=' . rawurlencode($text);
+    }
+
+    /**
+     * Кнопка «Подарить другу N дней» для уведомлений
+     */
+    private function giftButton(User $user): Button
+    {
+        return Button::make(str_replace('{days}', Pricing::referralFreeDays(), config('bot.button.gift')))
+            ->url($this->shareUrl($user));
+    }
+
+    /**
+     * Бонус пригласившему за активацию друга (одна выплата на пару навсегда).
+     * Возвращает true, если бонус выдан в этом вызове.
+     */
+    private function grantReferralActivationBonus(User $consumer): bool
+    {
+        if (empty($consumer->referrer_id)) {
+            return false;
+        }
+
+        // Идемпотентность: независимо от is_active, повторно за того же друга не платим
+        $alreadyGranted = Transaction::where('subject_type', 'referral_activation')
+            ->where('subject_id', $consumer->id)
+            ->exists();
+        if ($alreadyGranted) {
+            return false;
+        }
+
+        $referrer = User::find($consumer->referrer_id);
+        if (!$referrer) {
+            Log::warning('[ReferralBonus] Реферер не найден', [
+                'user_id' => $consumer->id,
+                'referrer_id' => $consumer->referrer_id,
+            ]);
+            return false;
+        }
+
+        $bonus = Pricing::referralActivationBonus();
+
+        try {
+            // Deposit триггерит TransactionObserver (может активировать клиентов реферера) — это ожидаемо
+            Transaction::createTransaction(
+                $referrer->id,
+                'deposit',
+                $bonus,
+                'referral_activation',
+                $consumer->id,
+                "Бонус за подключение приглашённого #{$consumer->id}"
+            );
+        } catch (\Throwable $e) {
+            Log::error('[ReferralBonus] Не удалось создать транзакцию бонуса', [
+                'user_id' => $consumer->id,
+                'referrer_id' => $referrer->id,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
+
+        $this->info("Referral bonus {$bonus} granted to #{$referrer->id} for consumer #{$consumer->id}");
+        Log::info("[ReferralBonus] Начислено {$bonus} пользователю #{$referrer->id} за активацию #{$consumer->id}");
+
+        // Уведомление — best effort: ошибка не ломает прогон и не откатывает транзакцию
+        try {
+            $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
+            if (!$botId) {
+                Log::warning('[ReferralBonus] TELEGRAPH_BOT_NOTIFY_ID не задан в .env');
+                return true;
+            }
+
+            $chat = TelegraphChat::where('chat_id', $referrer->telegram_id)
+                ->where('telegraph_bot_id', $botId)
+                ->first();
+            if (!$chat) {
+                Log::warning('[ReferralBonus] Чат реферера не найден', [
+                    'referrer_id' => $referrer->id,
+                    'telegram_id' => $referrer->telegram_id,
+                    'bot_id' => $botId,
+                ]);
+                return true;
+            }
+
+            // Убираем символы markdown из имени, чтобы не сломать разметку сообщения
+            $friendName = str_replace(['_', '*', '`', '['], '', (string) $consumer->name);
+            $percent = Pricing::referralPercent();
+            $text = "🎉 Ваш друг {$friendName} подключил VPN — вам начислено *{$bonus} у.е.*\n"
+                . "Дальше вы получаете {$percent}% с каждого его пополнения.";
+            $keyboard = Keyboard::make()->row([$this->giftButton($referrer)]);
+
+            $response = TelegraphRetry::attempt(
+                fn() => $chat->message($text)->keyboard($keyboard)->send(),
+                5,
+                500,
+                'ReferralBonus referrer_id=' . $referrer->id
+            );
+
+            if ($response->json('ok') !== true) {
+                Log::error('[ReferralBonus] Ошибка отправки уведомления', [
+                    'referrer_id' => $referrer->id,
+                    'response' => $response->json(),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            Log::error('[ReferralBonus] Не удалось отправить уведомление рефереру', [
+                'referrer_id' => $referrer->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return true;
+    }
+
+    /**
      * Вспомогательный метод для склонения слова "день"
      */
     protected function pluralDays(int $days): string
@@ -362,7 +531,7 @@ class ChargeVpnClients extends Command
     /**
      * Отправить сводку администратору в Telegram
      */
-    protected function sendAdminSummary(int $totalConsumers, int $totalClients, int $activeClients, int $inactiveClients, float $totalCharged, int $blockedToday): void
+    protected function sendAdminSummary(int $totalConsumers, int $totalClients, int $activeClients, int $inactiveClients, float $totalCharged, int $blockedToday, int $newToday = 0, int $newViaReferral = 0, int $referralBonusesToday = 0): void
     {
         $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
         $adminChatId = env('ADMIN_CHAT_ID');
@@ -391,6 +560,9 @@ class ChargeVpnClients extends Command
         $text .= "   ❌ Неактивных: *{$inactiveClients}*\n";
         $text .= "💰 Списано сегодня: *{$totalCharged} у.е.*\n";
         $text .= "🚫 Заблокировано сегодня: *{$blockedToday}*\n";
+        $text .= "🆕 Новых за сутки: *{$newToday}*\n";
+        $text .= "🔗 из них по ссылке: *{$newViaReferral}*\n";
+        $text .= "🎁 Реферальных бонусов сегодня: *{$referralBonusesToday}*\n";
 
         $response = TelegraphRetry::attempt(
             fn() => $chat->message($text)->send(),

@@ -61,16 +61,19 @@ class Handler extends WebhookHandler
         // откатятся обе записи, на следующем /start всё повторится с нуля.
         $user = DB::transaction(function () use ($from, $referrerId) {
             $newUser = $this->registerUser($from, $referrerId);
-            $this->createEntryBonus($newUser);
+            $this->createEntryBonus($newUser, $referrerId !== null);
             return $newUser;
         });
+
+        // Реально начисленная сумма (по приглашению она выше обычной)
+        $grantedBonus = $referrerId ? Pricing::referralInviteeBonus() : Pricing::entryBonus();
 
         // Все Telegram-сообщения после коммита БД и в safeSend, чтобы исключение
         // от api.telegram.org не валило весь webhook (иначе Telegram ретраит и
         // на ретраях greetExisting → return → бонус не догоняется до новой
         // ветки идемпотентности выше).
-        $this->safeSend(fn() => $this->greetNewcomer($from), 'start:greetNewcomer');
-        $this->safeSend(fn() => $this->reply("🎉 Вам начислен вступительный бонус " . Pricing::entryBonus() . " у.е.!"), 'start:bonusReply');
+        $this->safeSend(fn() => $this->greetNewcomer($from, $referrerId !== null), 'start:greetNewcomer');
+        $this->safeSend(fn() => $this->reply("🎉 Вам начислен вступительный бонус {$grantedBonus} у.е.!"), 'start:bonusReply');
 
         if ($referrerId) {
             $this->safeSend(fn() => $this->notifyReferrerAboutNewUser($referrerId, $user), 'start:notifyReferrer');
@@ -123,11 +126,12 @@ class Handler extends WebhookHandler
     }
 
     /* ------------------------- 2. Приветствие нового пользователя ------------------------- */
-    private function greetNewcomer(\DefStudio\Telegraph\DTO\User $from): void
+    private function greetNewcomer(\DefStudio\Telegraph\DTO\User $from, bool $byInvite = false): void
     {
         $price = Pricing::default();
-        $bonus = Pricing::entryBonus();
-        $daysFree = Pricing::freeDays();
+        // Приглашённому обещаем повышенный бонус — тот же, что начислил createEntryBonus
+        $bonus = $byInvite ? Pricing::referralInviteeBonus() : Pricing::entryBonus();
+        $daysFree = $byInvite ? Pricing::referralFreeDays() : Pricing::freeDays();
 
         // Получаем текст приветствия из конфига
         $welcomeText = config('bot.text.welcome');
@@ -237,17 +241,19 @@ class Handler extends WebhookHandler
      * вызывается внутри DB::transaction() в start(). Если упадёт, откатится
      * и регистрация пользователя.
      */
-    private function createEntryBonus(User $user): void
+    private function createEntryBonus(User $user, bool $byInvite = false): void
     {
-        $bonus = Pricing::entryBonus();
+        // По приглашению бонус повышенный; subject_type остаётся 'entry_bonus' —
+        // на нём держится идемпотентность ensureEntryBonus.
+        $bonus = $byInvite ? Pricing::referralInviteeBonus() : Pricing::entryBonus();
         Transaction::createTransaction(
             userId: $user->id,
             type: 'deposit',
             amount: $bonus,
             subjectType: 'entry_bonus',
-            comment: 'Вступительный бонус'
+            comment: $byInvite ? 'Вступительный бонус по приглашению' : 'Вступительный бонус'
         );
-        Log::info('[EntryBonus] Начислен', ['user_id' => $user->id, 'amount' => $bonus]);
+        Log::info('[EntryBonus] Начислен', ['user_id' => $user->id, 'amount' => $bonus, 'by_invite' => $byInvite]);
     }
 
     /**
@@ -267,8 +273,10 @@ class Handler extends WebhookHandler
             return;
         }
 
+        $byInvite = (bool) $user->referrer_id;
+
         try {
-            $this->createEntryBonus($user);
+            $this->createEntryBonus($user, $byInvite);
         } catch (\Throwable $e) {
             Log::error('[EntryBonus] Не удалось начислить запоздавший бонус', [
                 'user_id' => $user->id,
@@ -277,7 +285,7 @@ class Handler extends WebhookHandler
             return;
         }
 
-        $bonus = Pricing::entryBonus();
+        $bonus = $byInvite ? Pricing::referralInviteeBonus() : Pricing::entryBonus();
         $this->safeSend(
             fn() => $this->reply("🎉 Вам начислен вступительный бонус {$bonus} у.е.!"),
             'ensureEntryBonus:reply'
@@ -288,18 +296,26 @@ class Handler extends WebhookHandler
     public function showbalance(): void
     {
         $user_balance = $this->getBalance();
-        $dailyCost = Pricing::dailyCostForUser($this->user_id());
-        $this->chat->message(
+        $userId = $this->user_id();
+        $dailyCost = Pricing::dailyCostForUser($userId);
+        $earned = $this->referralEarned($userId);
+        $user = User::find($userId);
+
+        $keyboard = Keyboard::make()
+            ->row([Button::make('➕ Пополнить баланс')->action('addbalance')]);
+        if ($user) {
+            $keyboard = $keyboard->row([$this->giftButton($user)]);
+        }
+        $keyboard = $keyboard->row($this->menuButton());
+
+        $this->safeSend(fn() => $this->chat->message(
             "💼 *Ваш баланс:* {$user_balance} у.е.\n" .
                 "📉 Расход: {$dailyCost} у.е./сутки\n" .
-                "⏳ Ещё дней: " . Pricing::daysLeft($user_balance, $dailyCost)
+                "⏳ Ещё дней: " . Pricing::daysLeft($user_balance, $dailyCost) . "\n" .
+                "🤝 Заработано на друзьях: {$earned} у.е."
         )
-            ->keyboard(
-                Keyboard::make()
-                    ->row([Button::make('➕ Пополнить баланс')->action('addbalance')])
-                    ->row($this->menuButton())
-            )
-            ->send();
+            ->keyboard($keyboard)
+            ->send(), 'showbalance');
     }
 
     //instructionsGagets
@@ -689,7 +705,7 @@ class Handler extends WebhookHandler
 
             if ($user && $user->referrer_id) {
 
-                $bonusPercent = config('vpn.referral_bonus_percent', 10);
+                $bonusPercent = Pricing::referralPercent();
                 $bonusAmount = round($amountRub * $bonusPercent / 100, 2);
 
                 if ($bonusAmount > 0) {
@@ -723,15 +739,25 @@ class Handler extends WebhookHandler
 
             // Отправляем пользователю подтверждение
             $newBalance = $this->getBalance();
+            $afterPayment = str_replace(
+                ['{bonus}', '{percent}'],
+                [Pricing::referralActivationBonus(), Pricing::referralPercent()],
+                config('bot.text.referral.after_payment')
+            );
+
+            $keyboard = Keyboard::make()->row([
+                Button::make('💼 Мой баланс')->action('showbalance')
+            ]);
+            if ($user) {
+                $keyboard = $keyboard->row([$this->shareButton($user)]);
+            }
+
             $this->chat->message(
                 "✅ *Оплата успешна!*\n\n" .
                     "💰 Зачислено: {$amountRub} у.е.\n" .
-                    "💼 Текущий баланс: {$newBalance} у.е.\n"
-            )->keyboard(
-                Keyboard::make()->row([
-                    Button::make('💼 Мой баланс')->action('showbalance')
-                ])
-            )->send();
+                    "💼 Текущий баланс: {$newBalance} у.е.\n\n" .
+                    $afterPayment
+            )->keyboard($keyboard)->send();
         } catch (\Exception $e) {
             Log::error('[YKASSA] Ошибка при создании транзакции', [
                 'error' => $e->getMessage(),
@@ -748,24 +774,80 @@ class Handler extends WebhookHandler
         $user = User::find($this->user_id());
         if (!$user) return;
 
-        $botUsername = env('TELEGRAPH_BOT_USERNAME'); // например, 'my_vpn_bot'
-        $refLink = "https://t.me/{$botUsername}?start=ref_{$user->id}";
-
-        // Подсчитываем статистику: сколько пригласил, сколько заработал
         $invitedCount = User::where('referrer_id', $user->id)->count();
-        $bonusEarned = Transaction::where('user_id', $user->id)
-            ->where('subject_type', 'referral_bonus')
+
+        $text = str_replace(
+            ['{invitee_days}', '{free_days}', '{bonus}', '{percent}', '{link}', '{invited}', '{earned}'],
+            [
+                Pricing::referralFreeDays(),
+                Pricing::freeDays(),
+                Pricing::referralActivationBonus(),
+                Pricing::referralPercent(),
+                $this->referralLink($user), // в тексте program уже обёрнута в обратные кавычки
+                $invitedCount,
+                $this->referralEarned($user),
+            ],
+            config('bot.text.referral.program')
+        );
+
+        $this->safeSend(fn() => $this->chat->message($text)
+            ->keyboard(
+                Keyboard::make()
+                    ->row([$this->shareButton($user)])
+                    ->row($this->menuButton())
+            )
+            ->send(), 'ref');
+    }
+
+    /* ------------------------- Реферальные хелперы ------------------------- */
+
+    /**
+     * Реферальная ссылка пользователя. Единое место, где читается username бота
+     * (в config/telegraph.php его нет).
+     */
+    private function referralLink(User $user): string
+    {
+        $botUsername = env('TELEGRAPH_BOT_USERNAME'); // например, 'my_vpn_bot'
+        return "https://t.me/{$botUsername}?start=ref_{$user->id}";
+    }
+
+    /**
+     * Ссылка t.me/share/url — открывает у пользователя выбор чата с готовым текстом.
+     */
+    private function shareUrl(User $user): string
+    {
+        $link = $this->referralLink($user);
+        $text = str_replace(
+            ['{days}', '{link}'],
+            [Pricing::referralFreeDays(), $link],
+            config('bot.text.referral.share')
+        );
+
+        return 'https://t.me/share/url?url=' . rawurlencode($link) . '&text=' . rawurlencode($text);
+    }
+
+    private function shareButton(User $user): Button
+    {
+        return Button::make(config('bot.button.share'))->url($this->shareUrl($user));
+    }
+
+    private function giftButton(User $user): Button
+    {
+        return Button::make(str_replace('{days}', Pricing::referralFreeDays(), config('bot.button.gift')))
+            ->url($this->shareUrl($user));
+    }
+
+    /**
+     * Сколько пользователь заработал на друзьях (% с пополнений + бонусы за активацию).
+     */
+    private function referralEarned(User|int $user): float
+    {
+        $userId = $user instanceof User ? $user->id : $user;
+
+        return (float) Transaction::where('user_id', $userId)
+            ->whereIn('subject_type', ['referral_bonus', 'referral_activation'])
+            ->where('is_active', true)
             ->sum('amount');
-
-        $text = "🤝 *Ваша реферальная ссылка:*\n`{$refLink}`\n\n";
-        $text .= "📊 *Статистика:*\n";
-        $text .= "— Приглашено пользователей: *{$invitedCount}*\n";
-        $text .= "— Заработано бонусов: *{$bonusEarned} у.е.*\n\n";
-        $text .= "За каждого приглашённого вы получаете *" . config('vpn.referral_bonus_percent', 10) . "%* от суммы его пополнений!";
-
-        $this->chat->message($text)
-            ->keyboard(Keyboard::make()->row($this->menuButton()))
-            ->send();
     }
 
     // Обработчик для кнопки копирования (опционально)
@@ -779,11 +861,6 @@ class Handler extends WebhookHandler
     protected function notifyReferrerAboutNewUser(int $referrerId, User $newUser): void
     {
         $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
-        $chat = TelegraphChat::where('chat_id', $newUser->telegram_id) // здесь нужно получить чат реферера, а не нового пользователя
-            ->where('telegraph_bot_id', $botId)
-            ->first();
-
-        // Но нам нужен чат реферера, а не нового. Исправим:
         $referrer = User::find($referrerId);
         if (!$referrer) return;
 
@@ -795,9 +872,12 @@ class Handler extends WebhookHandler
 
         $text = "👋 По вашей реферальной ссылке зарегистрировался новый пользователь!\n\n";
         $text .= "Имя: {$newUser->name}\n";
-        $text .= "Когда он пополнит баланс, вы получите бонус.";
+        $text .= "Как только он подключит VPN — вам *" . Pricing::referralActivationBonus() . " у.е.*, "
+            . "а дальше *" . Pricing::referralPercent() . "%* с каждого его пополнения.";
 
-        $chat->message($text)->send();
+        $chat->message($text)
+            ->keyboard(Keyboard::make()->row([$this->shareButton($referrer)]))
+            ->send();
     }
 
     protected function notifyReferrerAboutBonus(int $referrerId, float $bonus, User $newUser): void
