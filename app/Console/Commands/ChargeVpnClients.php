@@ -409,7 +409,11 @@ class ChargeVpnClients extends Command
      */
     private function giftButton(User $user): Button
     {
-        return Button::make(str_replace('{days}', Pricing::referralFreeDays(), config('bot.button.gift')))
+        return Button::make(str_replace(
+            ['{days}', '{bonus}'],
+            [Pricing::referralFreeDays(), Pricing::referralActivationBonus()],
+            config('bot.button.gift')
+        ))
             ->url($this->shareUrl($user));
     }
 

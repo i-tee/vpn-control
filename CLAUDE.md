@@ -209,14 +209,14 @@ YooKassa-инвойсы через Telegram. `handlePreCheckoutQuery` подтв
 | Место | Что показывается | Код |
 |---|---|---|
 | Главное меню → «🤝 Реферальная программа» | экран `text.referral.program`: ссылка, приглашено, «Заработано на друзьях», кнопка «Поделиться» | `Handler::ref()` |
-| «💼 Баланс» | строка «🤝 Заработано на друзьях» и кнопка «Подарить» | `Handler::showbalance()` |
+| «💼 Баланс» | строка «🤝 Заработано на друзьях» и кнопка «Пригласить друга» | `Handler::showbalance()` |
 | После успешной оплаты | абзац `text.referral.after_payment` и кнопка «Поделиться» | `Handler::handleSuccessfulPayment()` |
-| Крон: «осталось N дней» и «заблокирован» | абзац `text.referral.nudge` (у предупреждения и блокировки) и кнопка «Подарить» | `ChargeVpnClients::sendBalanceNotification()` |
+| Крон: «осталось N дней» и «заблокирован» | абзац `text.referral.nudge` (у предупреждения и блокировки) и кнопка «Пригласить друга» | `ChargeVpnClients::sendBalanceNotification()` |
 | Приглашающему: друг зарегистрировался | сообщение и кнопка «Поделиться» | `Handler::notifyReferrerAboutNewUser()` |
 | Приглашающему: друг пополнил баланс | сообщение о проценте с пополнения | `Handler::notifyReferrerAboutBonus()` |
-| Приглашающему: друг прошёл первое списание | сообщение о бонусе и кнопка «Подарить» | `ChargeVpnClients::grantReferralActivationBonus()` |
+| Приглашающему: друг прошёл первое списание | сообщение о бонусе и кнопка «Пригласить друга» | `ChargeVpnClients::grantReferralActivationBonus()` |
 
-Кнопки «Поделиться» и «Подарить» — url-кнопки на `https://t.me/share/url?url=...&text=...`. Telegram открывает выбор чата с готовым текстом `text.referral.share` (плейсхолдеры `{days}` и `{link}`), без копирования ссылки. Хелперы `referralLink`, `shareUrl`, `giftButton` продублированы в `Handler` и `ChargeVpnClients` (у команды нет доступа к Handler; в `Handler` есть ещё `shareButton`). Меняешь формат ссылки или текст `share` — правь в обоих местах.
+Кнопки «Поделиться» и «Пригласить друга» — url-кнопки на `https://t.me/share/url?url=...&text=...`. Telegram открывает выбор чата с готовым текстом `text.referral.share` (плейсхолдеры `{days}` и `{link}`), без копирования ссылки. Хелперы `referralLink`, `shareUrl`, `giftButton` продублированы в `Handler` и `ChargeVpnClients` (у команды нет доступа к Handler; в `Handler` есть ещё `shareButton`). Меняешь формат ссылки или текст `share` — правь в обоих местах.
 
 Тексты все в `config/bot.php`: `text.referral.{share,nudge,after_payment,program}` и `button.{share,gift}`. Плейсхолдеры в фигурных скобках (`{days}`, `{bonus}`, `{percent}`, `{link}`, `{invitee_days}`, `{free_days}`, `{invited}`, `{earned}`) подставляются в коде через `str_replace`; в конфиге остаются как есть.
 

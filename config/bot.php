@@ -10,7 +10,7 @@ return [
         'topup' => '➕ Пополнить',
         'referral' => '🤝 Пригласить друга',
         'share' => '📤 Поделиться',
-        'gift' => '🎁 Подарить другу {days} дней',
+        'gift' => '🎁 Пригласить друга · ему {days} дней, тебе +{bonus}',
     ],
     'link' => [
         'instruction' => 'https://gatekeeper.xab.su/help',
