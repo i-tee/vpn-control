@@ -488,16 +488,6 @@ ssh deploy@<host> rollback    # вернуть предыдущую версию
 Кеши `config/route/view/event` собираются при старте контейнера
 (`infra/app/entrypoint.sh`), чистить руками не нужно.
 
-**Старый прод (Hestia, до переезда):**
-
-```bash
-cd /path/to/public_html
-git pull
-php artisan config:clear      # если менялись .env / config
-php artisan migrate           # если менялись миграции
-# composer install — только если менялись зависимости
-```
-
 `php artisan config:cache` теперь безопасен: прямых вызовов `env()` вне
 `config/` в коде нет, проектные переменные собраны в `config/gatekeeper.php`.
 Если добавляешь новую переменную окружения — читай её только в файле из
@@ -505,7 +495,10 @@ php artisan migrate           # если менялись миграции
 
 Артефактов в репо нет (vendor/, node_modules/, .env — в gitignore).
 
-## Внешняя VPS (Caddy + SOCKS5)
+## Наследие: внешняя VPS (Caddy + SOCKS5)
+
+⚠️ **До 17.11.2026.** Нужна, только если прод снова окажется в РФ. Сейчас
+сервер за границей, прокси выключен, ретранслятор `tg.<domain>` не используется.
 
 ### Caddy reverse-proxy
 
@@ -619,9 +612,17 @@ done
 - **Amnezia на клиенте режет github:** при включённом VPN `git push` по SSH не
   проходит ни на 22, ни на `ssh.github.com:443`. Выключить VPN на момент push.
 - **Логи:** `LOG_STACK=daily`, файлы `storage/logs/laravel-YYYY-MM-DD.log`,
-  14 дней (`LOG_DAILY_DAYS`).
-- **Логи Apache** (Hestia): `~/web/<domain>/logs/<domain>.log` — симлинки на
-  `/var/log/apache2/domains/`.
+  14 дней (`LOG_DAILY_DAYS`). На проде — `/opt/gatekeeper/storage/logs/`;
+  логи веб-сервера и планировщика — `docker compose logs app|scheduler`.
+- **Кода на проде нет.** Он в Docker-образе; на сервере в `/opt/gatekeeper`
+  только `.env`, база, логи, копии базы и сертификаты. Править код на сервере
+  нельзя и не нужно: изменения едут через push в `main`.
+- **artisan на проде — только внутри контейнера:**
+  `cd /opt/gatekeeper && docker compose exec app php artisan ...`. В скриптах,
+  которые идут через `ssh host bash`, добавляй `</dev/null`, иначе `exec`
+  съест остаток скрипта.
+- **Файлы в `storage` принадлежат uid 33 (www-data).** Правишь руками —
+  верни владельца `chown -R 33:33`, иначе приложение не сможет писать.
 - **Пароль VPN-клиента = telegram_id юзера.** Это by design, не баг —
   `creatOneClientFromTelegram` передаёт его вторым аргументом. Если у юзера нет
   `telegram_username`, логин генерируется как `c_{user_id}_{rand(111,999)}`.
@@ -640,16 +641,25 @@ done
    уведомления — «у.е.», админка показывает «₽». Фактически 1 ₽ = 1 у.е.
 5. **Транзакции из админки создаются с `subject_type = null`** — см. «двойной
    бонус» в Тонкостях.
+6. **PHP 8.3 и Laravel 12.21** — обновление отложено: совместимость Orchid 14
+   с новыми версиями не проверялась.
+7. **`AccessService` и экраны админки создают `new VpnService()` напрямую**,
+   в обход контейнера — их нельзя подменить в тестах так же, как в `vpn:reconcile`.
+8. **Юзер без telegram_id** (заведён на VPN-сервере руками, импортирован без
+   Telegram) не получает уведомлений: чата для него нет.
 
 ## Откаты / kill switch
 
-- **Отключить прокси:**
-  `sed -i 's/^TELEGRAM_PROXY_ENABLED=.*/TELEGRAM_PROXY_ENABLED=false/' .env && php artisan config:clear`
-- **Вернуть webhook на прямой URL:**
-  `curl -x "$PROXY" "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=https://<prod-domain>/telegraph/${BOT_TOKEN}/webhook"`
-- **Удалить webhook совсем:** `?url=` (пустой).
-- **Снести Caddy:** `systemctl stop caddy && apt remove -y caddy` — Amnezia на
-  той же VPS не заметит.
+- **Вернуть предыдущую версию кода:** `ssh deploy@<host> rollback`.
+- **Вернуть базу:** копии лежат в `/opt/gatekeeper/backups/` (снимаются перед
+  каждым деплоем), порядок восстановления — `infra/app/README.md`.
+- **Остановить бота и админку, VPN оставить:**
+  `cd /opt/gatekeeper && docker compose stop` — StrongSwan не зависит от контейнеров.
+- **Остановить управление VPN, VPN оставить:** `systemctl stop strongswan-api`.
+  Подключённые и новые клиенты продолжат работать, блокировки и новые каналы — нет.
+- **Остановить VPN целиком:** `systemctl disable --now strongswan-starter`.
+- **Переустановить вебхук бота:**
+  `docker compose exec app php artisan telegraph:set-webhook 1 --secret=<TELEGRAPH_WEBHOOK_SECRET>`.
 
 ## История ключевых фиксов
 
@@ -684,34 +694,43 @@ done
 повторный запуск, `--force`, `--user-ids`, блокировка, бонус за активацию),
 `AccessService` через обсервер, `PaymentService` (дубли, реферальный процент),
 регистрация через вебхук бота (роль, бонусы, занятый username), валидация
-логина и пароля VPN.
+логина и пароля VPN, `vpn:reconcile` (с подменённым сервером), `vpn:import-secrets`.
+
+API StrongSwan тестируется отдельно, без StrongSwan:
+`python3 -m unittest -v infra/strongswan/api/test_strongswan_api.py`.
+
+CI (`.github/workflows/deploy.yml`) гоняет оба набора и проверку синтаксиса
+shell-скриптов на каждый push и PR; деплой — только после зелёных тестов.
 
 ## Полезные команды
 
+На проде (`ssh root@<host>`, дальше `cd /opt/gatekeeper`):
+
 ```bash
-# Зарегистрированные scheduled-команды
-php artisan schedule:list
+docker compose ps                                   # что запущено
+docker compose logs -f --tail 100 app               # веб и вебхук
+docker compose exec app php artisan schedule:list   # расписание
+docker compose exec app php artisan vpn:reconcile   # сверка с VPN-сервером
+docker compose exec app php artisan vpn:daily-charge --user-ids=42 --force
+docker compose exec app php artisan tinker
+tail -f storage/logs/laravel-$(date +%F).log
+ls -lt backups/ | head                               # копии базы
+cat releases/history                                 # история деплоев
 
-# Прогон daily-charge руками
-php artisan vpn:daily-charge --force-notify
-php artisan vpn:daily-charge --user-ids=42,43
+# VPN-сервер
+ipsec status | head
+journalctl -u strongswan-api -n 50 --no-pager
+KEY=$(grep ^API_KEY /etc/strongswan-api.env | cut -d= -f2)
+curl -s --unix-socket /run/strongswan-api/api.sock -H "X-Api-Key: $KEY" -X POST http://localhost/sessions
 
-# Боты и чаты Telegraph в БД
-php artisan tinker --execute="\DefStudio\Telegraph\Models\TelegraphBot::all()->each(fn(\$b) => print \$b->id.' '.\$b->name.PHP_EOL);"
+# Что Telegram думает про вебхук
+docker compose exec app php artisan tinker --execute='$r = DefStudio\Telegraph\Models\TelegraphBot::find(1)->getWebhookDebugInfo()->send()->json("result"); echo json_encode(["pending" => $r["pending_update_count"] ?? null, "last_error" => $r["last_error_message"] ?? null, "ip" => $r["ip_address"] ?? null]), PHP_EOL;'
+```
 
-# Кэши
-php artisan config:clear      # после правки .env
-php artisan optimize:clear    # полная очистка
-php artisan config:cache      # безопасно, env() вне config/ нет
+Локально:
 
-# Логи
-ls -la storage/logs/
-grep -hE 'NOTIKI|AdminSummary|DailySummary|TelegraphRetry' storage/logs/laravel-$(date +%Y-%m-%d).log | tail -30
-
-# Что Telegram думает про webhook
-curl -x "$PROXY" "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo"
-
-# Caddy на внешней VPS
-systemctl status caddy --no-pager
-journalctl -u caddy -n 50 --no-pager | grep -iE 'obtained|error|certificate'
+```bash
+php artisan test
+php artisan vpn:daily-charge --force-notify   # вне production VPN-вызовы заглушены
+php artisan config:clear                      # после правки .env
 ```

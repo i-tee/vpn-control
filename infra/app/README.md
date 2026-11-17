@@ -61,7 +61,7 @@ NAT Docker; трафик VPN идёт мимо Docker вообще.
    cd /opt/gatekeeper
    docker compose exec app php artisan orchid:admin <name> <email> <password>
    docker compose exec app php artisan telegraph:new-bot
-   docker compose exec app php artisan telegraph:set-webhook
+   docker compose exec app php artisan telegraph:set-webhook 1 --secret=<TELEGRAPH_WEBHOOK_SECRET из .env>
    ```
 
 ## Повседневное
