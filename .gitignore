@@ -27,3 +27,6 @@ Thumbs.db
 # Python (infra/strongswan)
 __pycache__/
 *.pyc
+
+# Копии .env с секретами
+.env.bak*

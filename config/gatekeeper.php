@@ -25,4 +25,8 @@ return [
     // username бота без @, для реферальных ссылок t.me/<username>?start=ref_N
     'bot_username' => env('TELEGRAPH_BOT_USERNAME'),
 
+    // Только для локального DevSeeder: токен DEV-бота, который он регистрирует
+    // в telegraph_bots. На проде не задан — там бот заводится один раз руками.
+    'dev_bot_token' => env('TELEGRAPH_BOT_TOKEN'),
+
 ];

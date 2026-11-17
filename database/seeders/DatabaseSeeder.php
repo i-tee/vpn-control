@@ -3,21 +3,20 @@
 namespace Database\Seeders;
 
 use App\Models\User;
-// use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
 {
     /**
-     * Seed the application's database.
+     * На проде сидер не нужен: роль consumer создаёт миграция, админа —
+     * orchid:admin. Демо-данные — только локально.
      */
     public function run(): void
     {
-        // User::factory(10)->create();
+        User::consumerRole();
 
-        User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
-        ]);
+        if (app()->environment('local')) {
+            $this->call(DevSeeder::class);
+        }
     }
 }

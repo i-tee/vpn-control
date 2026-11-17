@@ -14,32 +14,64 @@
 - **FrankenPHP** (PHP + встроенный Caddy с авто-HTTPS) в Docker — прод-образ `infra/app/`
 - **StrongSwan IKEv2** на том же сервере, API на unix-сокете — `infra/strongswan/`
 
-Корневые `Dockerfile`, `docker-compose.yml`, `nginx/` — только для локальной
-разработки. Прод собирается из `infra/app/Dockerfile`.
+## Локальная разработка
 
-**Локальные порты** — отдельный диапазон 1xxxx, чтобы не пересекаться с другими
-локальными проектами (avicenna тоже занимает 8080 и 1025/8025):
+Тот же образ, что в проде (`infra/app/Dockerfile`, стадия `dev`), только код
+подключён папкой: правки видны сразу, пересобирать ничего не нужно. Корневой
+`docker-compose.yml` — только для разработки.
 
-| Сервис | Порт на хосте | Переменная |
-|---|---|---|
-| nginx | **18080** (на него смотрит ngrok) | `HTTP_PORT` |
-| mailpit UI | **18125** | `MAILPIT_UI_PORT` |
-| mailpit SMTP | **11125** | `MAILPIT_SMTP_PORT` |
-| redis | **16479** | `REDIS_PORT_HOST` |
+```bash
+docker compose up -d --build                              # первый раз или после правок Dockerfile
+touch database/database.sqlite
+docker compose exec app php artisan migrate:fresh --seed  # чистая база с демо-данными
+```
 
-Внутри docker-сети порты стандартные (`mailpit:1025`, `redis:6379`) — приложение
-ходит к контейнерам по именам, поэтому `MAIL_PORT`/`REDIS_PORT` в `.env` менять
-не нужно.
+| Что | Адрес |
+|---|---|
+| админка | http://localhost:18080/admin — `admin@gatekeeper.local` / `password` |
+| mailpit (все письма приложения) | http://localhost:18125 |
+| SMTP mailpit с хоста | localhost:11125 (из контейнера `mailpit:1025`) |
 
-ngrok запускать так: `ngrok http 18080`.
+**Порты** — отдельный диапазон 1xxxx: у других локальных проектов заняты 80,
+1025-1027, 3000-3100, 3306, 4000, 5173, 5432-5442, 8025-8094. Переопределяются
+через `HTTP_PORT`, `MAILPIT_UI_PORT`, `MAILPIT_SMTP_PORT` в `.env`. После смены
+портов — `docker compose up -d --force-recreate`.
 
-После смены портов в compose контейнеры надо пересоздать
-(`docker compose up -d --force-recreate`), обычный `restart` их не применит.
+**Демо-данные** (`database/seeders/DevSeeder.php`): 8 вымышленных покупателей
+на все случаи — с деньгами, на 3 дня, заблокированный должник, пара «пригласил /
+приглашён» с реферальными бонусами, два канала, без канала, сгенерированный
+логин. telegram_id из диапазона 9000000xx. Сидер запускается только при
+`APP_ENV=local`.
 
-Если контейнер с пробросом портов запустить сразу после остановки другого
-проекта с теми же портами, он может подняться без docker-сети (пустой
-`NetworkSettings.Networks`), и nginx падает с `host not found in upstream "app"`.
-Лечится тем же `--force-recreate`.
+**Что важно:**
+
+- **VPN-вызовы в деве заглушены** (`APP_ENV=local`) — каналы включаются и
+  блокируются только в базе, на настоящий сервер ничего не уходит.
+- **artisan — внутри контейнера:** `docker compose exec app php artisan ...`.
+  Если запустить `route:cache`/`config:cache` прямо в WSL, кеш запомнит пути
+  `/home/itee/...`, а в контейнере код лежит в `/app` — всё сломается.
+  Лечится `docker compose exec app php artisan optimize:clear`.
+  `php artisan test` можно гонять и в WSL — он ничего не кеширует.
+- **`DB_JOURNAL_MODE=delete` в локальном `.env`.** WAL держит общую память
+  в `-shm` файле, а через проброс папки Docker Desktop это ненадёжно: база
+  ломается с `database disk image is malformed`. На проде база на родном
+  диске, там WAL.
+- **Контейнер работает от твоего uid** (1000), поэтому файлы, которые он
+  создаёт, твои. Если что-то в `storage` вдруг стало чужим —
+  `docker compose exec -u 0 app chown -R 1000:1000 /app/storage /app/bootstrap/cache /app/database`.
+
+**DEV-бот** (`vipvpn_dev_bot`, не боевой!). Токен — `TELEGRAPH_BOT_TOKEN` в
+локальном `.env`, сидер регистрирует его как бота №1. Чтобы бот отвечал:
+
+```bash
+ngrok http 18080                                   # в Windows, даёт https-адрес
+# APP_URL=<адрес ngrok> в .env, затем:
+docker compose exec app php artisan telegraph:set-webhook 1
+```
+
+Адрес ngrok меняется при каждом запуске — тогда снова правишь `APP_URL` и
+ставишь вебхук. Боевой бот `viptrafic_bot` к локалке не подключать: вебхук у
+Telegram один, прод перестанет получать сообщения.
 
 ## Топология сети
 

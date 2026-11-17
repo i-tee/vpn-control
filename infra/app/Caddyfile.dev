@@ -1,0 +1,12 @@
+# Caddy для локальной разработки: только HTTP на :80 внутри контейнера
+# (снаружи — localhost:18080). HTTPS для бота даёт ngrok.
+{
+	frankenphp
+	admin off
+	auto_https off
+}
+
+:80 {
+	root * /app/public
+	php_server
+}
