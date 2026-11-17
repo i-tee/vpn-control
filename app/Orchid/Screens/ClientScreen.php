@@ -21,6 +21,14 @@ use Orchid\Filters\Types\WhereDateStartEnd;
 
 class ClientScreen extends Screen
 {
+
+    /**
+     * Доступ только с правом platform.vpn (выдаётся в Roles или через orchid:admin).
+     */
+    public function permission(): ?iterable
+    {
+        return ['platform.vpn'];
+    }
     public function query(): array
     {
         return [
@@ -56,9 +64,7 @@ class ClientScreen extends Screen
     public function layout(): array
     {
         // 🔐 Только пользователи с ролью consumer
-        $owners = User::whereHas('roles', function ($query) {
-            $query->where('name', 'consumer');
-        })->pluck('name', 'id')->toArray();
+        $owners = User::consumers()->pluck('name', 'id')->toArray();
 
         if (empty($owners)) {
             $owners = ['0' => 'No consumer users found'];

@@ -15,6 +15,13 @@ class Transaction extends Model
 {
     use HasFactory, AsSource, Filterable;
 
+    /**
+     * Баланс = сумма пополнений минус сумма списаний по активным транзакциям.
+     * Строковые литералы в одинарных кавычках: так выражение одинаково работает
+     * и в SQLite, и в MySQL. Это единственное место, где живёт формула.
+     */
+    public const BALANCE_SQL = "COALESCE(SUM(CASE WHEN type = 'deposit' THEN amount ELSE -amount END), 0)";
+
     protected $fillable = [
         'user_id',
         'type',
@@ -23,6 +30,7 @@ class Transaction extends Model
         'subject_id',
         'comment',
         'is_active',
+        'external_id',
     ];
 
     protected $casts = [
@@ -39,7 +47,6 @@ class Transaction extends Model
         'is_active',
     ];
 
-    // Добавьте это для работы фильтров
     protected $allowedFilters = [
         'id'         => Where::class,
         'user_id'    => Where::class,
@@ -48,6 +55,17 @@ class Transaction extends Model
         'is_active'  => Where::class,
         'created_at' => WhereDateStartEnd::class,
     ];
+
+    /**
+     * Текущий баланс пользователя.
+     */
+    public static function balanceFor(int $userId): float
+    {
+        return round((float) self::where('user_id', $userId)
+            ->where('is_active', true)
+            ->selectRaw(self::BALANCE_SQL . ' as balance')
+            ->value('balance'), 2);
+    }
 
     public function user()
     {
@@ -61,7 +79,8 @@ class Transaction extends Model
         ?string $subjectType = null,
         ?int $subjectId = null,
         ?string $comment = null,
-        bool $isActive = true
+        bool $isActive = true,
+        ?string $externalId = null
     ): self {
         return self::create([
             'user_id' => $userId,
@@ -71,6 +90,7 @@ class Transaction extends Model
             'subject_id' => $subjectId,
             'comment' => $comment,
             'is_active' => $isActive,
+            'external_id' => $externalId,
         ]);
     }
 

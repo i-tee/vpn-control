@@ -4,14 +4,19 @@ namespace App\Models;
 
 use App\Services\BinderService;
 use App\Services\VpnService;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Log;
 use Orchid\Filters\Types\Like;
 use Orchid\Filters\Types\Where;
 use Orchid\Filters\Types\WhereDateStartEnd;
+use Orchid\Platform\Models\Role;
 use Orchid\Platform\Models\User as Authenticatable;
 
 class User extends Authenticatable
 {
+    /** slug роли покупателей VPN. Только они попадают под ежедневное списание. */
+    public const ROLE_CONSUMER = 'consumer';
+
     /**
      * The attributes that are mass assignable.
      *
@@ -77,50 +82,59 @@ class User extends Authenticatable
         'balance',
     ];
 
+    /**
+     * Роль покупателя. Создаётся, если её ещё нет: на пустой базе без неё
+     * новые юзеры из бота остались бы без роли и не попали бы под списание.
+     */
+    public static function consumerRole(): Role
+    {
+        return Role::firstOrCreate(
+            ['slug' => self::ROLE_CONSUMER],
+            ['name' => 'Consumer', 'permissions' => []]
+        );
+    }
+
+    /**
+     * Только покупатели VPN.
+     */
+    public function scopeConsumers(Builder $query): Builder
+    {
+        return $query->whereHas('roles', fn($q) => $q->where('slug', self::ROLE_CONSUMER));
+    }
+
     public function referrals()
     {
         return $this->hasMany(User::class, 'referrer_id');
     }
 
-    public function getBalanceAttribute()
+    /**
+     * Если баланс уже подтянут подзапросом scopeWithBalance, берём его,
+     * иначе считаем отдельным запросом.
+     */
+    public function getBalanceAttribute($value): float
     {
-        return app(BinderService::class)->getUserBalance($this);
+        return $value !== null ? round((float) $value, 2) : Transaction::balanceFor($this->id);
     }
 
     public static function getClientsCountByTelegramId($telegramId)
     {
-        $user_id =  self::where('telegram_id', $telegramId)->value('id');
-        $user = self::find($user_id);
-        $bs = new BinderService();
-        return $bs->countVpnClientsForUser($user);
+        $user = self::where('telegram_id', $telegramId)->first();
+
+        return $user ? app(BinderService::class)->countVpnClientsForUser($user) : 0;
     }
 
     public static function getClientsByTelegramId($telegramId)
     {
-
-        $user = self::where('telegram_id', $telegramId)->first();   // сразу получаем модель
+        $user = self::where('telegram_id', $telegramId)->first();
         abort_if(!$user, 404, 'User not found');
 
-        $bs        = new BinderService();
-        $list      = $bs->getClientsForUser($user);
-
-        $plain = [];
-        foreach ($list as $row) {
-            $client = (is_array($row) && isset($row['App\Models\Client']))
-                ? $row['App\Models\Client']
-                : $row;
-
-            $plain[] = [
-                's' => $client['server_name'] ?? $client->server_name,
-                'n' => $client['name']        ?? $client->name,
-                'p' => $client['password']    ?? $client->password,
-            ];
-        }
-
-        Log::debug('telegram_bot: -> clients {clients}', [
-            'clients' => $plain
-        ]);
-        return $plain;
+        return $user->clients()->get()
+            ->map(fn(Client $client) => [
+                's' => $client->server_name,
+                'n' => $client->name,
+                'p' => $client->password,
+            ])
+            ->all();
     }
 
     public static function getIdByTelegramId($telegramId)
@@ -128,10 +142,11 @@ class User extends Authenticatable
         return self::where('telegram_id', $telegramId)->value('id');
     }
 
-    public static function getBalanceByTelegramId($telegramId)
+    public static function getBalanceByTelegramId($telegramId): float
     {
-        $user_id = self::where('telegram_id', $telegramId)->value('id');
-        return self::find($user_id)->balance();
+        $userId = self::where('telegram_id', $telegramId)->value('id');
+
+        return $userId ? Transaction::balanceFor($userId) : 0.0;
     }
 
     public function transactions()
@@ -161,7 +176,7 @@ class User extends Authenticatable
 
         $result = $vpn->createClient(
             $username,                 // имя клиента на VPN-сервере
-            $user->telegram_id,        // telegram_id (используется как пароль)
+            (string) $user->telegram_id, // telegram_id используется как пароль (by design)
             $user_id,                  // внутренний ID пользователя
             $username,                 // комментарий (можно тоже подставить имя)
             true                       // активировать сразу
@@ -177,19 +192,16 @@ class User extends Authenticatable
         return true;
     }
 
-    public function balance()
+    public function balance(): float
     {
-        return $this->transactions()
-            ->where('is_active', true)
-            ->selectRaw('SUM(CASE WHEN type = "deposit" THEN amount ELSE -amount END) as balance')
-            ->value('balance') ?? 0;
+        return Transaction::balanceFor($this->id);
     }
 
     // Подзапрос для получения баланса при выборке пользователей (используется в ConsumerListScreen)
     public function scopeWithBalance($query)
     {
         return $query->addSelect([
-            'balance' => Transaction::selectRaw('SUM(CASE WHEN type = "deposit" THEN amount ELSE -amount END)')
+            'balance' => Transaction::selectRaw(Transaction::BALANCE_SQL)
                 ->whereColumn('user_id', 'users.id')
                 ->where('is_active', true)
                 ->limit(1)

@@ -39,7 +39,8 @@ class PlatformProvider extends OrchidServiceProvider
                 ->icon('bs.lock')
                 ->title('VPN')
                 //->badge(fn() => \App\Models\Client::class::count())
-                ->route('platform.clients'),
+                ->route('platform.clients')
+                ->permission('platform.vpn'),
 
             // Menu::make('Get Started')
             //     ->icon('bs.book')
@@ -58,11 +59,13 @@ class PlatformProvider extends OrchidServiceProvider
 
             Menu::make('Transactions')
                 ->icon('wallet')
-                ->route('platform.transactions.list'),
+                ->route('platform.transactions.list')
+                ->permission('platform.vpn'),
 
             Menu::make('Consumers')
                 ->icon('people')
-                ->route('platform.consumers.list'),
+                ->route('platform.consumers.list')
+                ->permission('platform.vpn'),
 
             // Menu::make('Layouts Overview')
             //     ->icon('bs.window-sidebar')
@@ -115,6 +118,9 @@ class PlatformProvider extends OrchidServiceProvider
     public function permissions(): array
     {
         return [
+            ItemPermission::group('VPN')
+                ->addPermission('platform.vpn', 'Клиенты, покупатели и транзакции'),
+
             ItemPermission::group(__('System'))
                 ->addPermission('platform.systems.roles', __('Roles'))
                 ->addPermission('platform.systems.users', __('Users')),

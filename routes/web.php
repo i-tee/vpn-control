@@ -6,36 +6,5 @@ Route::get('/', function () {
     return view('welcome');
 });
 
-Route::get('/help', function () {
-    return redirect('https://www.perplexity.ai/search/kak-podkliuchitsia-k-vpn-ikev2-YrwMxnZzS32m4UlGTh4D6g');
-});
-
-/*
-
-use App\Http\Controllers\VpnTestController;
-
-// Тестовые маршруты
-Route::prefix('vpn-test')->group(function () {
-    // Показать форму и список
-    Route::get('/', function () {
-        return view('vpn.test', [
-            'action' => 'Тестирование VPN API',
-            'instructions' => [
-                '1. Получить список пользователей',
-                '2. Добавить нового пользователя',
-                '3. Удалить существующего пользователя'
-            ]
-        ]);
-    });
-
-    // Получить список пользователей
-    Route::get('/users', [VpnTestController::class, 'listUsers'])->name('vpn.users');
-
-    // Добавить пользователя
-    Route::post('/add', [VpnTestController::class, 'addUser'])->name('vpn.add');
-
-    // Удалить пользователя
-    Route::post('/remove', [VpnTestController::class, 'removeUser'])->name('vpn.remove');
-});
-
-*/
+// Инструкция по подключению IKEv2. На неё ведёт кнопка «Как подключиться» в боте.
+Route::view('/help', 'help.main');

@@ -71,9 +71,12 @@ ngrok запускать так: `ngrok http 18080`.
   имя, referrer_id. Роль `consumer` (покупатели VPN) или платформенные (админы).
   Содержит слой статических telegram-фасадов: `getIdByTelegramId`,
   `getClientsByTelegramId`, `getBalanceByTelegramId`, `creatOneClientFromTelegram`.
-  ⚠️ Баланс считается **двумя** способами вперемешку: метод `balance()` (raw SQL)
-  и аксессор `getBalanceAttribute()` (через BinderService). Плюс скоуп
-  `scopeWithBalance()` для сортировки в списках.
+  Роль покупателя: `User::ROLE_CONSUMER`, скоуп `User::consumers()`,
+  `User::consumerRole()` (создаёт роль, если её нет).
+- **Баланс считается в одном месте:** `Transaction::balanceFor($userId)` и
+  константа `Transaction::BALANCE_SQL`. Через них работают `User::balance()`,
+  аксессор `$user->balance`, скоуп `withBalance()`, `BinderService` и крон.
+  Формула написана с одинарными кавычками, чтобы одинаково работать в SQLite и MySQL.
 - **`App\Models\Client`** — VPN-канал на сервере: name (логин), password
   (открытым текстом), server_name, is_active, user_id.
 - **`App\Models\Transaction`** — deposit / withdraw, amount, subject_type
@@ -82,29 +85,30 @@ ngrok запускать так: `ngrok http 18080`.
   ручном создании через админку), comment, is_active.
   Баланс = `SUM(deposit) - SUM(withdraw)` по активным транзакциям.
 
-### Схема БД и её расхождение с миграциями
+### Схема БД
 
 ```
 users         id, name, email, password, permissions(jsonb),
               telegram_id(unique), telegram_first_name, telegram_last_name,
               telegram_username(unique), referrer_id(FK users, nullOnDelete)
-clients       id, name, password, user_id(FK cascade), server_name,
-              owner_id, telegram_nickname, is_active(*), timestamps
+clients       id, name(unique), password, user_id(FK cascade), server_name,
+              owner_id, telegram_nickname, is_active, timestamps
+              index(user_id, is_active)
 transactions  id, user_id(FK cascade), type ENUM(deposit|withdraw),
               amount DECIMAL(10,2), subject_type, subject_id,
-              comment TEXT, is_active BOOL default true, timestamps
+              external_id(unique, nullable), comment TEXT,
+              is_active BOOL default true, timestamps
+              index(user_id, is_active), index(subject_type, subject_id)
+roles         запись slug=consumer создаётся миграцией
 ```
 
-⚠️ **`clients.is_active` не создаётся ни одной миграцией** — колонку добавили
-руками прямо на проде. Поле используется везде (модель, обсерверы, VpnService,
-крон, все экраны админки), но `php artisan migrate` на чистой БД даст нерабочее
-приложение. Если поднимаешь окружение с нуля — колонку нужно добавить вручную
-или дописать миграцию.
+`php artisan migrate` на пустой базе даёт рабочее приложение: колонка
+`clients.is_active` и роль `consumer` теперь создаются миграциями
+(`2026_11_17_*`). Миграции проверены на SQLite.
 
-⚠️ **Индексов нет** кроме автоматических (FK + unique на telegram-полях). При
-этом баланс считается агрегатом по `transactions` для каждого consumer'а на
-каждом экране и в каждом прогоне крона. На текущих объёмах (десятки юзеров) не
-болит, но при росте — первое место, куда смотреть.
+`clients.name` уникален, потому что это логин на VPN-сервере.
+`transactions.external_id` хранит внешний ID платежа (`yookassa:<charge_id>`),
+unique не даёт зачислить один платёж дважды.
 
 ⚠️ `clients.price` нет — цена всегда из `config/vpn.php` по `server_name`.
 
@@ -153,13 +157,26 @@ transactions  id, user_id(FK cascade), type ENUM(deposit|withdraw),
 - **`App\Services\BinderService`** — выборка consumer'ов, подсчёт балансов,
   выборка клиентов юзера. Используется и в админке, и в Handler'е бота.
 - **`App\Services\VpnService`** — HTTP-клиент к StrongSwan-серверу. Принимает
-  `server_name` в конструкторе, endpoint/secret из `config/vpn.php`.
+  `server_name` в конструкторе, адрес и ключ из `config/vpn.php`
+  (`VPN_API_HOST`, `VPN_API_PORT`, `VPN_SECRET_KEY`).
   **В не-production окружении сетевые вызовы заглушены** (`shouldExecute()`
   только пишет в лог) — можно безопасно гонять DEV-бот, не плодя пользователей
   на боевом StrongSwan.
+  Логин и пароль проверяются регуляркой (`USERNAME_PATTERN`, `PASSWORD_PATTERN`):
+  они пишутся в `ipsec.secrets`, и кавычка или перевод строки позволили бы
+  дописать туда чужую строку. Ключ уходит и в заголовке `X-Api-Key`, и в теле
+  запроса. Ключ и пароль в лог не пишутся. Если сервер не принял нового юзера,
+  `createClient()` удаляет запись из БД.
   ⚠️ `VpnServiceProvider` регистрирует синглтон **без аргумента** (дефолтный
   сервер). Везде, где нужен конкретный сервер, код делает `new VpnService($name)`
   в обход контейнера.
+- **`App\Services\AccessService`** — единственное место, где решается, включён
+  ли VPN: `sync($user)` при балансе ≥ 0 активирует все каналы юзера, при < 0
+  блокирует. Вызывают крон и `TransactionObserver`. Канал без имени пропускается
+  с предупреждением, ошибка по одному каналу не мешает остальным.
+- **`App\Services\PaymentService`** — `credit($user, $totalAmountMinor, $chargeId)`
+  зачисляет оплату ЮKassa ровно один раз (по `external_id`) и начисляет
+  реферальный процент. Сумма берётся из `total_amount` платежа, а не из payload.
 
 ## Telegram-бот
 
@@ -190,9 +207,12 @@ start():
 
 ### Платежи
 
-YooKassa-инвойсы через Telegram. `handlePreCheckoutQuery` подтверждает,
-`handleSuccessfulPayment` создаёт `deposit` и при наличии referrer'а начисляет
-% бонус (`referral_bonus_percent`, сейчас 20%).
+YooKassa-инвойсы через Telegram. `handlePreCheckoutQuery` проверяет, что юзер
+из payload существует и валюта RUB, и отвечает через
+`$this->bot->answerPreCheckoutQuery()`. `handleSuccessfulPayment` отдаёт
+зачисление в `PaymentService`: повторный вебхук с тем же
+`provider_payment_charge_id` ничего не зачисляет. Реферальный процент
+(`referral_bonus_percent`, сейчас 20%) пишется с `subject_id` = id приглашённого.
 
 ## Реферальная программа
 
@@ -229,7 +249,7 @@ YooKassa-инвойсы через Telegram. `handlePreCheckoutQuery` подтв
 
 ### ⚠️ Подводные камни
 
-- **`TELEGRAPH_BOT_USERNAME` читается через `env()`** в `Handler::referralLink()` и `ChargeVpnClients::referralLink()`, в `config/telegraph.php` ключа нет. Это ещё одно место из списка «не делать `config:cache`» (см. Деплой). Без username ссылка превращается в `https://t.me/?start=ref_N`.
+- **Username бота** берётся из `config('gatekeeper.bot_username')` (`TELEGRAPH_BOT_USERNAME`). Без него ссылка превращается в `https://t.me/?start=ref_N`.
 - **«Заработано на друзьях»** = сумма активных (`is_active=true`) транзакций пользователя с `subject_type IN ('referral_bonus','referral_activation')`. Отменённые через админку выплаты в сумму не входят.
 - **Идемпотентность выплаты за активацию не смотрит на `is_active`**: если админ отменил транзакцию `referral_activation`, повторно её не выдаст, запись с этим `subject_id` уже есть.
 - **Выплата не зависит от знака баланса друга**: `grantReferralActivationBonus` вызывается сразу после списания, до проверки `balanceAfter < 0`.
@@ -251,13 +271,13 @@ StrongSwan прямо из жизненного цикла моделей.
 конечному пользователю**. Как и любая активация/деактивация из крона или из
 TransactionObserver. Ретраев тут нет, только try/catch.
 
-**`TransactionObserver`** — на `created` и `updated`:
+**`TransactionObserver`** — на `created` и `updated`, **только после коммита**
+(`ShouldHandleEventsAfterCommit`): внутри `DB::transaction` запросы к VPN не
+держат базу и не уходят при откате.
 - `created` с `type !== 'deposit'` → выходит сразу (withdraw от крона не трогает)
-- `created` (deposit) → письмо `NewDeposit` + `checkBalanceAndManageClients()`
-- `updated` при изменении `is_active` или `amount` → `checkBalanceAndManageClients()`
+- `created` (deposit) → письмо `NewDeposit` + `AccessService::sync()`
+- `updated` при изменении `is_active`, `amount` или `type` → `AccessService::sync()`
 
-`checkBalanceAndManageClients()` **повторяет логику крона**: баланс ≥ 0 →
-активирует всех неактивных клиентов, < 0 → деактивирует всех активных. Реальные
 HTTP-запросы к StrongSwan уходят синхронно — при пополнении из бота, при правке
 транзакции в Orchid, при отмене транзакции.
 
@@ -276,8 +296,11 @@ HTTP-запросы к StrongSwan уходят синхронно — при п�
 - `App\Console\Commands\ChargeVpnClients` (`vpn:daily-charge`) — единственная
   проектная artisan-команда. Итерируется по consumer'ам с активными клиентами,
   считает price из `config/vpn.php`, создаёт `withdraw` с
-  `subject_type='vpn_service'`. Дальше: баланс < 0 → деактивирует всех активных,
-  ≥ 0 → реактивирует заблокированных.
+  `subject_type='vpn_service'`. Дальше вызывает `AccessService::sync()`:
+  баланс < 0 → блокирует, ≥ 0 → включает.
+- **Повторный запуск в тот же день не списывает второй раз.** Если у юзера
+  сегодня (по UTC) уже есть активное списание `vpn_service`, он пропускается.
+  `--force` списывает принудительно.
 - **Уведомления:** per-user предупреждение если `daysLeft < 7` или баланс в
   минусе. В конце прогона — Telegram-сводка админу + письма `ClientsBlocked`
   (если кого-то заблокировали) и `DailySummary` (всегда).
@@ -338,24 +361,18 @@ HTTP-запросы к StrongSwan уходят синхронно — при п�
   **обнулить поле через этот экран нельзя**. Роут edit объявлен как
   `transactions/{id}/edit` намеренно без route-model binding.
 
-⚠️ **У проектных экранов нет `->permission()`** — любой пользователь с доступом
-в `/admin` управляет клиентами, транзакциями и балансами.
-
-⚠️ **Девять демо-экранов `Screens/Examples/*` зарегистрированы в
-`routes/platform.php`** и доступны по прямым URL `/admin/examples/*` в проде —
-просто скрыты из меню.
+**Права:** проектные экраны (клиенты, покупатели, транзакции) требуют право
+`platform.vpn`. Его выдаёт `php artisan orchid:admin` (все права) или галочка
+в Roles. Демо-экраны Orchid удалены.
 
 ⚠️ `resources/views/vendor/platform/**` — опубликованные blade-шаблоны Orchid
 (~100 файлов). Апгрейд `orchid/platform` не подтянет изменения вьюх сам.
 
 ## Роуты
 
-- `routes/web.php` — практически пустой: `/` → стоковый welcome,
-  `/help` → **редирект на внешний perplexity-поиск**. При этом в проекте лежит
-  готовая `resources/views/help/main.blade.php` (полноценная инструкция по
-  IKEv2), которая никуда не подключена, а кнопка «Как подключиться» в боте ведёт
-  как раз на `/help`. Блок `vpn-test` роутов закомментирован, вместе с ним
-  мёртвые `VpnTestController` и `views/vpn/test.blade.php`.
+- `routes/web.php` — `/` стоковый welcome, `/help` отдаёт
+  `resources/views/help/main.blade.php` (инструкция по IKEv2). На неё ведёт
+  кнопка «Как подключиться» в боте.
 - `routes/platform.php` — экраны админки.
 - `api.php` **отсутствует**. Единственный не-web эндпоинт — health-check `/up`
   из `bootstrap/app.php`.
@@ -387,8 +404,11 @@ VPN-сервер (HTTP, не HTTPS) не затрагивается. Допол�
 
 ## ENV переменные
 
-Боевой `.env` в `.gitignore`. ⚠️ `.env.example` **неполный** — в нём только
-стоковый Laravel + `TELEGRAM_PROXY_*`, проектных переменных нет.
+Боевой `.env` в `.gitignore`. Полный список с комментариями — в `.env.example`.
+Проектные переменные читаются только в `config/gatekeeper.php`, `config/vpn.php`,
+`config/telegram.php` и `config/telegraph.php`; в коде везде `config()`.
+`TELEGRAPH_BOT_TOKEN` больше не используется: токен бота живёт в таблице
+`telegraph_bots`.
 
 ```
 APP_ENV=production         # иначе schedule в console.php не зарегистрируется
@@ -423,12 +443,10 @@ php artisan migrate           # если менялись миграции
 # composer install — только если менялись зависимости
 ```
 
-🚨 **Никогда не делать `php artisan config:cache` на этом проекте.** В коде в 15
-местах читают `env()` напрямую в обход `config()` — `ADMIN_EMAIL`,
-`TELEGRAPH_BOT_NOTIFY_ID`, `ADMIN_CHAT_ID`, `TELEGRAPH_BOT_TOKEN`,
-`TELEGRAPH_BOT_USERNAME` (в ChargeVpnClients, Handler, VpnService и всех трёх
-обсерверах). После кеширования конфига `env()` возвращает **null**, и все
-уведомления молча перестают работать без единой ошибки в логах.
+`php artisan config:cache` теперь безопасен: прямых вызовов `env()` вне
+`config/` в коде нет, проектные переменные собраны в `config/gatekeeper.php`.
+Если добавляешь новую переменную окружения — читай её только в файле из
+`config/`, иначе после кеширования она молча станет null.
 
 Артефактов в репо нет (vendor/, node_modules/, .env — в gitignore).
 
@@ -557,28 +575,16 @@ done
 
 Ничего из этого не горит, но знать полезно. Примерно в порядке серьёзности:
 
-1. **`clients.is_active` не в миграциях** — окружение с нуля не поднимется.
-2. **`env()` вместо `config()` в 15 местах** — `config:cache` молча ломает все
-   уведомления. См. раздел Деплой.
-3. **Боевой IP StrongSwan в git** — `config/vpn.php` содержит host и порт
-   открытым текстом, репозиторий публичный. (`secret_key` уже переведён на
-   `env()` без дефолта; `update_webhook.php` с токеном DEV-бота — в
-   `.gitignore`, там ок.)
-4. **Экраны админки без `->permission()`** — нет разграничения доступа.
-5. **Демо-экраны Orchid доступны в проде** по `/admin/examples/*`.
-6. **Обсерверы дублируют логику крона** и делают синхронные HTTP-вызовы к
-   StrongSwan из жизненного цикла моделей.
-7. **Нет индексов** под агрегаты баланса.
-8. **Долг накапливается неограниченно** — списание идёт даже при глубоко
+1. **Обсерверы делают синхронные HTTP-вызовы к StrongSwan** из жизненного
+   цикла моделей. Логика решения теперь одна (`AccessService`), но вызов всё
+   ещё синхронный. На одном сервере с API это локальный запрос, не страшно.
+2. **Долг накапливается неограниченно** — списание идёт даже при глубоко
    отрицательном балансе.
-9. **Нет тестов** — только стоковые ExampleTest.
-10. **Мёртвый код:** `VpnTestController` + `views/vpn/test.blade.php` (роуты
-    закомментированы), `views/help/main.blade.php` (готовая инструкция, никуда
-    не подключена, вместо неё `/help` редиректит на perplexity).
-11. **`telegram_username` unique** — юзер может сменить username в Telegram на
-    уже занятый другой записью, будет конфликт при обновлении.
-12. **Расхождение валюты в текстах:** приветствие говорит «руб/сутки», баланс и
-    уведомления — «у.е.», админка показывает «₽». Фактически 1 ₽ = 1 у.е.
+3. **`ClientObserver` шлёт Telegram без ретраев**, только try/catch.
+4. **Расхождение валюты в текстах:** приветствие говорит «руб/сутки», баланс и
+   уведомления — «у.е.», админка показывает «₽». Фактически 1 ₽ = 1 у.е.
+5. **Транзакции из админки создаются с `subject_type = null`** — см. «двойной
+   бонус» в Тонкостях.
 
 ## Откаты / kill switch
 
@@ -602,6 +608,23 @@ done
 - Caddy на внешней VPS как reverse-proxy для входящих webhook'ов.
 - Переезд внешней VPS с переносом обеих ролей (Caddy + SOCKS5).
 - Реферальная программа: повышенный бонус приглашённому, бонус приглашающему за активацию друга (выдаёт крон), кнопка «Поделиться» в один тап, напоминания в точках контакта.
+- Подготовка к перезапуску после потери БД на Beget (ноябрь 2026): миграции для
+  `is_active`, индексов, `external_id` и роли `consumer`; единая формула баланса
+  под SQLite; `AccessService` и `PaymentService`; идемпотентные крон и оплата;
+  `config/gatekeeper.php` вместо `env()`; права `platform.vpn` в админке,
+  удалены демо-экраны Orchid и мёртвый тестовый контроллер; тесты.
+
+## Тесты
+
+`php artisan test` — гоняется на SQLite в памяти (`phpunit.xml`), сеть закрыта
+через `Http::preventStrayRequests()` в `tests/TestCase.php`. Хелперы там же:
+`makeConsumer()`, `makeClient()`, `deposit()`, `withdraw()`.
+
+Покрыто: формула баланса и скоуп `withBalance`, ежедневное списание (сумма,
+повторный запуск, `--force`, `--user-ids`, блокировка, бонус за активацию),
+`AccessService` через обсервер, `PaymentService` (дубли, реферальный процент),
+регистрация через вебхук бота (роль, бонусы, занятый username), валидация
+логина и пароля VPN.
 
 ## Полезные команды
 
@@ -619,7 +642,7 @@ php artisan tinker --execute="\DefStudio\Telegraph\Models\TelegraphBot::all()->e
 # Кэши
 php artisan config:clear      # после правки .env
 php artisan optimize:clear    # полная очистка
-# НО НЕ config:cache — см. раздел Деплой
+php artisan config:cache      # безопасно, env() вне config/ нет
 
 # Логи
 ls -la storage/logs/

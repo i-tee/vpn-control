@@ -10,6 +10,14 @@ use Orchid\Screen\TD;
 
 class TransactionListScreen extends Screen
 {
+
+    /**
+     * Доступ только с правом platform.vpn (выдаётся в Roles или через orchid:admin).
+     */
+    public function permission(): ?iterable
+    {
+        return ['platform.vpn'];
+    }
     public function query(): array
     {
         $query = Transaction::query()

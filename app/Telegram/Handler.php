@@ -8,14 +8,13 @@ use DefStudio\Telegraph\Keyboard\Keyboard;
 use DefStudio\Telegraph\Keyboard\Button;
 use DefStudio\Telegraph\Facades\Telegraph;
 use Illuminate\Support\Facades\Log;
-use Orchid\Platform\Models\Role;
 use App\Models\Transaction;
 use DefStudio\Telegraph\DTO\PreCheckoutQuery;
 use DefStudio\Telegraph\DTO\SuccessfulPayment;
 use DefStudio\Telegraph\Models\TelegraphChat;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use App\Support\Pricing;
+use App\Services\PaymentService;
 
 class Handler extends WebhookHandler
 {
@@ -166,21 +165,29 @@ class Handler extends WebhookHandler
         $name = trim($from->firstName() . ' ' . ($from->lastName() ?? ''))
             ?: 'TG_User_' . $from->id();
 
+        // telegram_username уникален. Если этот username уже записан за другим
+        // юзером (тот сменил ник в Telegram), не валим регистрацию, а оставляем пустым.
+        $username = $from->username() ?: null;
+        if ($username && User::where('telegram_username', $username)->exists()) {
+            Log::warning('[Register] telegram_username уже занят, регистрируем без него', [
+                'telegram_id' => $from->id(),
+                'username' => $username,
+            ]);
+            $username = null;
+        }
+
         $user = User::create([
             'telegram_id'         => $from->id(),
             'telegram_first_name' => $from->firstName(),
             'telegram_last_name'  => $from->lastName() ?: null,
-            'telegram_username'   => $from->username() ?: null,
+            'telegram_username'   => $username,
             'name'                => $name,
-            'email'               => ($from->username() ?: 'tg_' . $from->id()) . "@$server",
+            'email'               => ($username ?: 'tg_' . $from->id()) . "@$server",
             'password'            => bcrypt((string)$from->id()),
             'referrer_id'         => $referrerId,
         ]);
 
-        $role = Role::where('slug', 'consumer')->first();
-        if ($role) {
-            $user->roles()->attach($role->id);
-        }
+        $user->roles()->attach(User::consumerRole()->id);
 
         return $user;
     }
@@ -623,150 +630,93 @@ class Handler extends WebhookHandler
     }
 
     /**
-     * Шаг 3: Обработка PreCheckoutQuery (подтверждение перед списанием)
+     * Шаг 3: PreCheckoutQuery. Telegram ждёт ответа до 10 секунд, иначе платёж
+     * отменяется, поэтому здесь только быстрые проверки.
      */
     protected function handlePreCheckoutQuery(PreCheckoutQuery $preCheckoutQuery): void
     {
-        Log::info('[YKASSA] PreCheckoutQuery получен', ['id' => $preCheckoutQuery->id()]);
+        $payload = json_decode($preCheckoutQuery->invoicePayload(), true);
+        $userExists = is_array($payload) && isset($payload['user_id']) && User::whereKey($payload['user_id'])->exists();
+        $ok = $userExists && $preCheckoutQuery->currency() === 'RUB';
 
-        // Берём токен бота из .env (или из config, если он там правильно определён)
-        $botToken = env('TELEGRAPH_BOT_TOKEN'); // или config('telegraph.bots.default.token') после настройки
-
-        if (empty($botToken)) {
-            Log::error('[YKASSA] Токен бота не найден!');
-            throw new \Exception('Ошибка конфигурации бота');
-        }
-
-        // Формируем URL и отправляем запрос
-        $url = "https://api.telegram.org/bot{$botToken}/answerPreCheckoutQuery";
-        $response = Http::post($url, [
-            'pre_checkout_query_id' => $preCheckoutQuery->id(),
-            'ok' => true,
+        Log::info('[YKASSA] PreCheckoutQuery', [
+            'id' => $preCheckoutQuery->id(),
+            'user_id' => $payload['user_id'] ?? null,
+            'ok' => $ok,
         ]);
 
-        Log::info('[YKASSA] Ответ на PreCheckoutQuery отправлен', $response->json());
-
-        // Если хотите сохранить payload для последующей обработки
-        $payload = json_decode($preCheckoutQuery->invoicePayload(), true);
-        if ($payload && isset($payload['user_id'])) {
-            cache()->put('payment_' . $preCheckoutQuery->id(), $payload, now()->addMinutes(10));
-        }
+        $this->bot->answerPreCheckoutQuery(
+            (int) $preCheckoutQuery->id(),
+            $ok,
+            $ok ? null : 'Не удалось проверить платёж. Напишите в поддержку.'
+        )->send();
     }
 
     /**
-     * Шаг 4: Обработка SuccessfulPayment (успешный платёж)
+     * Шаг 4: SuccessfulPayment. Деньги уже списаны, поэтому зачисляем при любой
+     * возможности, а повторы того же платежа отсекает PaymentService.
      */
     protected function handleSuccessfulPayment(SuccessfulPayment $successfulPayment): void
     {
-        $payload = $successfulPayment->invoicePayload();
-        $totalAmount = $successfulPayment->totalAmount();
-        $currency = $successfulPayment->currency();
         $providerChargeId = $successfulPayment->providerPaymentChargeId();
+        $data = json_decode($successfulPayment->invoicePayload(), true);
+
+        // Кому зачислять: юзер из payload инвойса, иначе тот, кто платил
+        $user = (is_array($data) && isset($data['user_id'])) ? User::find($data['user_id']) : null;
+        $user ??= User::where('telegram_id', $this->chat->chat_id)->first();
 
         Log::info('[YKASSA] SuccessfulPayment получен', [
-            'payload' => $payload,
-            'total_amount' => $totalAmount,
-            'currency' => $currency,
-            'provider_charge_id' => $providerChargeId
+            'user_id' => $user?->id,
+            'total_amount' => $successfulPayment->totalAmount(),
+            'currency' => $successfulPayment->currency(),
+            'provider_charge_id' => $providerChargeId,
         ]);
 
-        // Декодируем payload
-        $data = json_decode($payload, true);
-        if (!$data || !isset($data['user_id']) || !isset($data['amount'])) {
-            Log::error('[YKASSA] SuccessfulPayment: неверный payload', ['payload' => $payload]);
-            $this->reply('⚠️ Ошибка обработки платежа. Обратитесь в поддержку.');
+        if (!$user) {
+            Log::error('[YKASSA] Не найден юзер для зачисления', ['payload' => $data, 'chat_id' => $this->chat->chat_id]);
+            $this->safeSend(fn() => $this->reply("⚠️ Платёж прошёл, но мы не нашли ваш аккаунт. Напишите в поддержку, ID: {$providerChargeId}"), 'payment:noUser');
             return;
         }
 
-        $userId = $data['user_id'];
-        $amountRub = $data['amount']; // сумма в рублях
-
-        // Здесь можно начислить баланс, но пока просто логируем
-        Log::info('[YKASSA] Успешный платёж пользователя', [
-            'user_id' => $userId,
-            'amount_rub' => $amountRub,
-            'provider_charge_id' => $providerChargeId
-        ]);
-
         try {
-            // Создаём транзакцию с информацией о платеже
-            Transaction::createTransaction(
-                userId: $userId,                // правильно: userId (camelCase)
-                type: 'deposit',
-                amount: $amountRub,
-                subjectType: 'yookassa',        // правильно: subjectType
-                subjectId: null,
-                comment: "Оплата через ЮKassa, транзакция: {$providerChargeId}",
-                isActive: true
-            );
-
-            // Проверяем, есть ли у пользователя пригласивший
-            $user = User::find($userId);
-
-            if ($user && $user->referrer_id) {
-
-                $bonusPercent = Pricing::referralPercent();
-                $bonusAmount = round($amountRub * $bonusPercent / 100, 2);
-
-                if ($bonusAmount > 0) {
-                    // Создаём транзакцию бонуса для пригласившего
-                    Transaction::createTransaction(
-                        userId: $user->referrer_id,
-                        type: 'deposit',
-                        amount: $bonusAmount,
-                        subjectType: 'referral_bonus',
-                        subjectId: null,
-                        comment: "Бонус за приглашение пользователя #{$userId}",
-                        isActive: true
-                    );
-
-                    Log::info('[Referral] Бонус начислен', [
-                        'referrer_id' => $user->referrer_id,
-                        'bonus' => $bonusAmount,
-                        'from_user' => $userId
-                    ]);
-
-                    // Отправляем уведомление пригласившему
-                    $this->notifyReferrerAboutBonus($user->referrer_id, $bonusAmount, $user);
-                }
-            }
-
-            Log::info('[YKASSA] Транзакция создана', [
-                'user_id' => $userId,
-                'amount' => $amountRub,
-                'provider_charge_id' => $providerChargeId
-            ]);
-
-            // Отправляем пользователю подтверждение
-            $newBalance = $this->getBalance();
-            $afterPayment = str_replace(
-                ['{bonus}', '{percent}'],
-                [Pricing::referralActivationBonus(), Pricing::referralPercent()],
-                config('bot.text.referral.after_payment')
-            );
-
-            $keyboard = Keyboard::make()->row([
-                Button::make('💼 Мой баланс')->action('showbalance')
-            ]);
-            if ($user) {
-                $keyboard = $keyboard->row([$this->shareButton($user)]);
-            }
-
-            $this->chat->message(
-                "✅ *Оплата успешна!*\n\n" .
-                    "💰 Зачислено: {$amountRub} у.е.\n" .
-                    "💼 Текущий баланс: {$newBalance} у.е.\n\n" .
-                    $afterPayment
-            )->keyboard($keyboard)->send();
-        } catch (\Exception $e) {
-            Log::error('[YKASSA] Ошибка при создании транзакции', [
+            $result = app(PaymentService::class)->credit($user, $successfulPayment->totalAmount(), $providerChargeId);
+        } catch (\Throwable $e) {
+            Log::error('[YKASSA] Ошибка при зачислении', [
                 'error' => $e->getMessage(),
-                'user_id' => $userId,
-                'amount' => $amountRub,
-                'provider_charge_id' => $providerChargeId
+                'user_id' => $user->id,
+                'provider_charge_id' => $providerChargeId,
             ]);
-            $this->reply("⚠️ Платёж прошёл, но ошибка при зачислении. ID: {$providerChargeId}");
+            $this->safeSend(fn() => $this->reply("⚠️ Платёж прошёл, но ошибка при зачислении. Напишите в поддержку, ID: {$providerChargeId}"), 'payment:error');
+            return;
         }
+
+        if ($result['status'] === PaymentService::RESULT_DUPLICATE) {
+            return;
+        }
+
+        if ($result['referrer_id']) {
+            $this->safeSend(
+                fn() => $this->notifyReferrerAboutBonus($result['referrer_id'], $result['referral_bonus'], $user),
+                'payment:notifyReferrer'
+            );
+        }
+
+        $afterPayment = str_replace(
+            ['{bonus}', '{percent}'],
+            [Pricing::referralActivationBonus(), Pricing::referralPercent()],
+            config('bot.text.referral.after_payment')
+        );
+
+        $keyboard = Keyboard::make()
+            ->row([Button::make('💼 Мой баланс')->action('showbalance')])
+            ->row([$this->shareButton($user)]);
+
+        $this->safeSend(fn() => $this->chat->message(
+            "✅ *Оплата успешна!*\n\n" .
+                "💰 Зачислено: {$result['amount']} у.е.\n" .
+                "💼 Текущий баланс: " . $user->balance() . " у.е.\n\n" .
+                $afterPayment
+        )->keyboard($keyboard)->send(), 'payment:confirm');
     }
 
     public function ref(): void
@@ -807,7 +757,7 @@ class Handler extends WebhookHandler
      */
     private function referralLink(User $user): string
     {
-        $botUsername = env('TELEGRAPH_BOT_USERNAME'); // например, 'my_vpn_bot'
+        $botUsername = config('gatekeeper.bot_username'); // например, 'my_vpn_bot'
         return "https://t.me/{$botUsername}?start=ref_{$user->id}";
     }
 
@@ -864,7 +814,7 @@ class Handler extends WebhookHandler
 
     protected function notifyReferrerAboutNewUser(int $referrerId, User $newUser): void
     {
-        $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
+        $botId = config('gatekeeper.notify_bot_id');
         $referrer = User::find($referrerId);
         if (!$referrer) return;
 
@@ -886,7 +836,7 @@ class Handler extends WebhookHandler
 
     protected function notifyReferrerAboutBonus(int $referrerId, float $bonus, User $newUser): void
     {
-        $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
+        $botId = config('gatekeeper.notify_bot_id');
         $referrer = User::find($referrerId);
         if (!$referrer) return;
 

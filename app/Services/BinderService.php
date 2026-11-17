@@ -7,7 +7,6 @@ use App\Models\Transaction;
 use App\Models\User;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 
 class BinderService
 {
@@ -42,12 +41,7 @@ class BinderService
     {
         $userId = $user instanceof User ? $user->id : $user;
 
-        $balance = Transaction::where('user_id', $userId)
-            ->where('is_active', true)
-            ->selectRaw('SUM(CASE WHEN type = "deposit" THEN amount ELSE -amount END) as balance')
-            ->value('balance') ?? 0;
-
-        return (float) $balance;
+        return Transaction::balanceFor((int) $userId);
     }
 
     /**
@@ -59,10 +53,8 @@ class BinderService
      */
     public function getConsumerListData(int $page = 1, int $perPage = 20): LengthAwarePaginator
     {
-        // Получаем пользователей с ролью consumer с пагинацией
-        $users = User::whereHas('roles', function ($query) {
-            $query->where('slug', 'consumer');
-        })->with('clients')
+        $users = User::consumers()
+            ->with('clients')
             ->orderBy('created_at', 'desc')
             ->paginate($perPage, ['*'], 'page', $page);
 
@@ -85,15 +77,8 @@ class BinderService
     public function isConsumer($user): bool
     {
         $userId = $user instanceof User ? $user->id : $user;
-        $user = User::with('roles')->find($userId);
 
-        if (!$user) {
-            return false;
-        }
-
-        return $user->roles->contains(function ($role) {
-            return $role->slug === 'consumer';
-        });
+        return User::consumers()->whereKey($userId)->exists();
     }
 
     /**
@@ -118,8 +103,6 @@ class BinderService
      */
     public function getConsumers(): Collection
     {
-        return User::whereHas('roles', function ($query) {
-            $query->where('slug', 'consumer');
-        })->get();
+        return User::consumers()->get();
     }
 }

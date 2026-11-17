@@ -22,6 +22,14 @@ use Orchid\Support\Facades\Toast;
 
 class ConsumerEditScreen extends Screen
 {
+
+    /**
+     * Доступ только с правом platform.vpn (выдаётся в Roles или через orchid:admin).
+     */
+    public function permission(): ?iterable
+    {
+        return ['platform.vpn'];
+    }
     public ?User $user = null;
     public array $availableReferrals = [];
 

@@ -5,10 +5,9 @@ namespace App\Console\Commands;
 use App\Models\Client;
 use App\Models\Transaction;
 use App\Models\User;
-use App\Services\VpnService;
+use App\Services\AccessService;
 use App\Notifications\ClientsBlocked;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Collection;
@@ -21,105 +20,71 @@ use App\Support\Pricing;
 
 class ChargeVpnClients extends Command
 {
+    protected $signature = 'vpn:daily-charge
+        {--user-ids= : Comma-separated list of user IDs to process (optional)}
+        {--force-notify : Send notification regardless of days left}
+        {--force : Charge even if the user was already charged today}';
 
-    protected $signature = 'vpn:daily-charge {--user-ids= : Comma-separated list of user IDs to process (optional)} {--force-notify : Send notification regardless of days left}';
     protected $description = 'Daily charge for active VPN clients, deactivate on negative balance, reactivate on positive';
 
-    protected VpnService $vpnService;
-
-    public function __construct(VpnService $vpnService)
-    {
-        parent::__construct();
-        $this->vpnService = $vpnService;
-    }
-
-    public function handle()
+    public function handle(AccessService $access): int
     {
         $this->info('Starting daily VPN client charge process...');
-        Log::info('NOTIKI -- Starting daily VPN client charge process');
+        Log::info('[DailyCharge] Старт');
 
         // Общая статистика по системе (до фильтрации)
-        $totalConsumers = User::whereHas('roles', function ($query) {
-            $query->where('slug', 'consumer');
-        })->count();
+        $totalConsumers = User::consumers()->count();
+        $newToday = User::consumers()->where('created_at', '>=', now()->subDay())->count();
+        $newViaReferral = User::consumers()->where('created_at', '>=', now()->subDay())->whereNotNull('referrer_id')->count();
 
-        // Новые consumer'ы за сутки (и сколько из них пришло по реферальной ссылке)
-        $newToday = User::whereHas('roles', function ($query) {
-            $query->where('slug', 'consumer');
-        })->where('created_at', '>=', now()->subDay())->count();
-        $newViaReferral = User::whereHas('roles', function ($query) {
-            $query->where('slug', 'consumer');
-        })->where('created_at', '>=', now()->subDay())->whereNotNull('referrer_id')->count();
+        $consumers = User::consumers()->get();
 
-        $totalClients = Client::count();
-        $activeClientsTotal = Client::where('is_active', true)->count();
-        $inactiveClientsTotal = Client::where('is_active', false)->count();
-
-        // Получаем всех потребителей для обработки
-        $consumers = User::whereHas('roles', function ($query) {
-            $query->where('slug', 'consumer');
-        })->get();
-
-        // Применяем фильтр по ID, если передан параметр --user-ids
-        $userIdsOption = $this->option('user-ids');
-        if ($userIdsOption) {
-            $userIds = explode(',', $userIdsOption);
-            $userIds = array_map('trim', $userIds);
-            $userIds = array_filter($userIds, 'is_numeric');
+        // Фильтр по ID, если передан --user-ids
+        if ($userIdsOption = $this->option('user-ids')) {
+            $userIds = array_filter(array_map('trim', explode(',', $userIdsOption)), 'is_numeric');
             if (!empty($userIds)) {
                 $consumers = $consumers->filter(fn($user) => in_array($user->id, $userIds));
-                $this->info("Filtered to " . $consumers->count() . " consumers by provided IDs.");
+                $this->info("Filtered to {$consumers->count()} consumers by provided IDs.");
             } else {
-                $this->warn("No valid numeric IDs found in --user-ids. Processing all consumers.");
+                $this->warn('No valid numeric IDs found in --user-ids. Processing all consumers.');
             }
         }
 
         $this->info("Found {$consumers->count()} consumers to process");
         $totalCharged = 0;
         $allBlockedClients = new Collection();
-        $totalActiveClients = 0; // для статистики по обработанным
-        $referralBonusesToday = 0; // реферальные бонусы за активацию, выданные в этом прогоне
+        $referralBonusesToday = 0;
+        $skippedAlreadyCharged = 0;
 
         foreach ($consumers as $consumer) {
-            $activeClients = Client::where('user_id', $consumer->id)
-                ->where('is_active', true)
-                ->get();
+            $activeClients = Client::where('user_id', $consumer->id)->where('is_active', true)->get();
 
             if ($activeClients->isEmpty()) {
                 continue;
             }
 
-            $this->line("Processing consumer #{$consumer->id} ({$consumer->name}) with {$activeClients->count()} active clients");
-
-            $totalCharge = 0;
-            $serverDetails = [];
-
-            $totalActiveClients += $activeClients->count();
-
-            // Расчёт суммы списания по каждому клиенту
-            foreach ($activeClients as $client) {
-                $serverName = $client->server_name;
-                $price = Pricing::forServer($serverName);
-                $totalCharge += $price;
-
-                if (!isset($serverDetails[$serverName])) {
-                    $serverDetails[$serverName] = [
-                        'count' => 1,
-                        'price' => $price,
-                        'total' => $price,
-                    ];
-                } else {
-                    $serverDetails[$serverName]['count']++;
-                    $serverDetails[$serverName]['total'] += $price;
-                }
+            // Идемпотентность: повторный запуск в тот же день не списывает второй раз
+            if (!$this->option('force') && $this->alreadyChargedToday($consumer)) {
+                $skippedAlreadyCharged++;
+                $this->line("Consumer #{$consumer->id} already charged today, skipping");
+                continue;
             }
 
-            // Создаём транзакцию списания
+            $this->line("Processing consumer #{$consumer->id} ({$consumer->name}) with {$activeClients->count()} active clients");
+
+            // Сумма списания по каждому серверу
+            $serverDetails = [];
+            foreach ($activeClients as $client) {
+                $price = Pricing::forServer($client->server_name);
+                $serverDetails[$client->server_name]['price'] = $price;
+                $serverDetails[$client->server_name]['count'] = ($serverDetails[$client->server_name]['count'] ?? 0) + 1;
+            }
+            $totalCharge = array_sum(array_map(fn($d) => $d['price'] * $d['count'], $serverDetails));
+
             $commentDetails = [];
             foreach ($serverDetails as $serverName => $details) {
                 $commentDetails[] = "{$details['count']} active client(s) on {$serverName} ({$details['price']} each)";
             }
-            $comment = "Daily charge for " . implode('; ', $commentDetails) . ". Total: {$totalCharge}";
 
             Transaction::createTransaction(
                 $consumer->id,
@@ -127,11 +92,10 @@ class ChargeVpnClients extends Command
                 $totalCharge,
                 'vpn_service',
                 null,
-                $comment
+                'Daily charge for ' . implode('; ', $commentDetails) . ". Total: {$totalCharge}"
             );
 
             $this->info("Charged {$totalCharge} from consumer #{$consumer->id}");
-            Log::info("NOTIKI -- Charged {$totalCharge} from consumer #{$consumer->id}");
             $totalCharged += $totalCharge;
 
             // Приглашённый реально потратил деньги на VPN — платим бонус пригласившему
@@ -139,58 +103,16 @@ class ChargeVpnClients extends Command
                 $referralBonusesToday++;
             }
 
-            // Проверяем баланс после списания
-            $balanceAfter = $this->getUserBalance($consumer);
+            // Включаем или блокируем каналы по новому балансу
+            $sync = $access->sync($consumer);
+            $balanceAfter = $sync['balance'];
+            $allBlockedClients = $allBlockedClients->merge($sync['deactivated']);
             $this->line("Consumer #{$consumer->id} balance after charge: {$balanceAfter}");
 
-            if ($balanceAfter < 0) {
-                // Баланс отрицательный – деактивируем всех активных клиентов
-                $this->warn("Negative balance for consumer #{$consumer->id}. Deactivating clients...");
-                foreach ($activeClients as $client) {
-                    try {
-                        // Используем сервис с сервером конкретного клиента
-                        $vpn = new VpnService($client->server_name);
-                        $vpn->deactivateClient($client->id);
-                        $allBlockedClients->push($client);
-                        $this->line("Deactivated client #{$client->id} ({$client->name})");
-                        Log::warning("NOTIKI -- Deactivated client #{$client->id} for user #{$consumer->id} due to negative balance");
-                    } catch (\Exception $e) {
-                        $this->error("Failed to deactivate client #{$client->id}: " . $e->getMessage());
-                        Log::error("NOTIKI -- Failed to deactivate client #{$client->id}: " . $e->getMessage());
-                    }
-                }
-            } else {
-                // Баланс неотрицательный – активируем всех неактивных клиентов (если были)
-                $inactiveClients = Client::where('user_id', $consumer->id)
-                    ->where('is_active', false)
-                    ->get();
-
-                if ($inactiveClients->isNotEmpty()) {
-                    $this->info("Positive balance for consumer #{$consumer->id}. Activating inactive clients...");
-                    foreach ($inactiveClients as $client) {
-                        try {
-                            $vpn = new VpnService($client->server_name);
-                            $vpn->activateClient($client->id);
-                            $this->line("Activated client #{$client->id} ({$client->name})");
-                            Log::info("Activated client #{$client->id} for user #{$consumer->id} due to positive balance");
-                        } catch (\Exception $e) {
-                            $this->error("Failed to activate client #{$client->id}: " . $e->getMessage());
-                            Log::error("Failed to activate client #{$client->id}: " . $e->getMessage());
-                        }
-                    }
-                }
-            }
-
             // Дней до блокировки — по фактическому суточному расходу этого юзера
-            // ($totalCharge уже посчитан выше по его активным клиентам), а не по
-            // базовой цене: иначе у юзера с двумя каналами прогноз завышался вдвое.
             $daysLeft = Pricing::daysLeft($balanceAfter, $totalCharge);
-            $wasBlocked = $balanceAfter < 0; // пользователь был заблокирован, если баланс отрицательный
-
-            // Отправляем уведомление, если баланс меньше 7 дней или если заблокирован
-            $forceNotify = $this->option('force-notify');
-
-            Log::info('[BalanceNotify] Опция --force-notify:', ['value' => $forceNotify ? 'true' : 'false']);
+            $wasBlocked = $balanceAfter < 0;
+            $forceNotify = (bool) $this->option('force-notify');
 
             if ($forceNotify || $wasBlocked || $daysLeft < 7) {
                 try {
@@ -198,33 +120,25 @@ class ChargeVpnClients extends Command
                 } catch (\Throwable $e) {
                     Log::error('[BalanceNotify] Не удалось отправить уведомление, продолжаем дальше', [
                         'user_id' => $consumer->id,
-                        'telegram_id' => $consumer->telegram_id,
                         'error' => $e->getMessage(),
                     ]);
                 }
             }
         }
 
-        Log::info('NOTIKI -- Before IF to send ClientsBlocked', ['count' => $allBlockedClients->count()]);
+        // Статистика по клиентам — после прогона, с учётом блокировок
+        $totalClients = Client::count();
+        $activeClientsTotal = Client::where('is_active', true)->count();
+        $inactiveClientsTotal = $totalClients - $activeClientsTotal;
 
-        // Отправка уведомления администратору о заблокированных клиентах (по email)
-        if ($allBlockedClients->isNotEmpty()) {
-            Log::info('NOTIKI -- Preparing to send ClientsBlocked', ['count' => $allBlockedClients->count()]);
-
-            $adminEmail = env('ADMIN_EMAIL');
-            if ($adminEmail) {
-                try {
-                    Notification::route('mail', $adminEmail)
-                        ->notify(new ClientsBlocked($allBlockedClients));
-                    $this->info('Notification about blocked clients sent to admin.');
-                    Log::info('NOTIKI -- Notification about blocked clients sent to admin.', ['count' => $allBlockedClients->count()]);
-                } catch (\Throwable $e) {
-                    Log::error('NOTIKI -- Failed to send ClientsBlocked email', ['error' => $e->getMessage()]);
-                }
+        if ($allBlockedClients->isNotEmpty() && ($adminEmail = config('gatekeeper.admin_email'))) {
+            try {
+                Notification::route('mail', $adminEmail)->notify(new ClientsBlocked($allBlockedClients));
+            } catch (\Throwable $e) {
+                Log::error('[DailyCharge] Не удалось отправить письмо ClientsBlocked', ['error' => $e->getMessage()]);
             }
         }
 
-        // Отправляем сводку администратору в Telegram
         try {
             $this->sendAdminSummary(
                 totalConsumers: $totalConsumers,
@@ -241,40 +155,38 @@ class ChargeVpnClients extends Command
             Log::error('[AdminSummary] Не удалось отправить сводку администратору в Telegram', ['error' => $e->getMessage()]);
         }
 
-        // Отправляем сводку администратору на email
-        $adminEmail = env('ADMIN_EMAIL');
-        if ($adminEmail) {
+        if ($adminEmail = config('gatekeeper.admin_email')) {
             try {
-                Notification::route('mail', $adminEmail)
-                    ->notify(new \App\Notifications\DailySummary(
-                        totalConsumers: $totalConsumers,
-                        totalClients: $totalClients,
-                        activeClients: $activeClientsTotal,
-                        inactiveClients: $inactiveClientsTotal,
-                        totalCharged: $totalCharged,
-                        blockedToday: $allBlockedClients->count()
-                    ));
-                Log::info('[DailySummary] Сводка отправлена на email', ['email' => $adminEmail]);
+                Notification::route('mail', $adminEmail)->notify(new DailySummary(
+                    totalConsumers: $totalConsumers,
+                    totalClients: $totalClients,
+                    activeClients: $activeClientsTotal,
+                    inactiveClients: $inactiveClientsTotal,
+                    totalCharged: $totalCharged,
+                    blockedToday: $allBlockedClients->count()
+                ));
             } catch (\Throwable $e) {
                 Log::error('[DailySummary] Не удалось отправить сводку администратору на email', ['error' => $e->getMessage()]);
             }
         }
 
         $this->info("Daily charge process completed. Total charged: {$totalCharged}");
-        Log::info("NOTIKI -- Daily charge process completed. Total charged: {$totalCharged}");
+        Log::info("[DailyCharge] Готово. Списано: {$totalCharged}, пропущено как уже списанных: {$skippedAlreadyCharged}");
 
         return Command::SUCCESS;
     }
 
     /**
-     * Получить баланс пользователя
+     * Было ли у юзера сегодня ежедневное списание.
      */
-    private function getUserBalance(User $user): float
+    private function alreadyChargedToday(User $user): bool
     {
-        return (float) Transaction::where('user_id', $user->id)
+        return Transaction::where('user_id', $user->id)
+            ->where('type', 'withdraw')
+            ->where('subject_type', 'vpn_service')
             ->where('is_active', true)
-            ->selectRaw('SUM(CASE WHEN type = "deposit" THEN amount ELSE -amount END) as balance')
-            ->value('balance') ?? 0;
+            ->where('created_at', '>=', now()->startOfDay())
+            ->exists();
     }
 
     /**
@@ -290,7 +202,7 @@ class ChargeVpnClients extends Command
             'force' => $force ? 'true' : 'false'
         ]);
 
-        $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
+        $botId = config('gatekeeper.notify_bot_id');
         if (!$botId) {
             Log::error('[BalanceNotify] TELEGRAPH_BOT_NOTIFY_ID не задан в .env');
             return;
@@ -379,12 +291,11 @@ class ChargeVpnClients extends Command
     }
 
     /**
-     * Реферальная ссылка юзера. Username бота читается через env() — так же, как в
-     * Handler::ref(): ключа username в config/telegraph.php нет.
+     * Реферальная ссылка юзера. Username бота берётся из config('gatekeeper.bot_username').
      */
     private function referralLink(User $user): string
     {
-        $botUsername = env('TELEGRAPH_BOT_USERNAME');
+        $botUsername = config('gatekeeper.bot_username');
 
         return "https://t.me/{$botUsername}?start=ref_{$user->id}";
     }
@@ -470,7 +381,7 @@ class ChargeVpnClients extends Command
 
         // Уведомление — best effort: ошибка не ломает прогон и не откатывает транзакцию
         try {
-            $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
+            $botId = config('gatekeeper.notify_bot_id');
             if (!$botId) {
                 Log::warning('[ReferralBonus] TELEGRAPH_BOT_NOTIFY_ID не задан в .env');
                 return true;
@@ -537,8 +448,8 @@ class ChargeVpnClients extends Command
      */
     protected function sendAdminSummary(int $totalConsumers, int $totalClients, int $activeClients, int $inactiveClients, float $totalCharged, int $blockedToday, int $newToday = 0, int $newViaReferral = 0, int $referralBonusesToday = 0): void
     {
-        $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
-        $adminChatId = env('ADMIN_CHAT_ID');
+        $botId = config('gatekeeper.notify_bot_id');
+        $adminChatId = config('gatekeeper.admin_chat_id');
 
         if (!$botId || !$adminChatId) {
             Log::warning('[AdminSummary] TELEGRAPH_BOT_NOTIFY_ID или ADMIN_CHAT_ID не заданы в .env');

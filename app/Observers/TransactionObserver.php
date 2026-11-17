@@ -3,108 +3,48 @@
 namespace App\Observers;
 
 use App\Models\Transaction;
-use App\Models\Client;
-use App\Services\VpnService;
+use App\Notifications\NewDeposit;
+use App\Services\AccessService;
+use Illuminate\Contracts\Events\ShouldHandleEventsAfterCommit;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 
-class TransactionObserver
+/**
+ * Пополнение или правка транзакции сразу включает или блокирует каналы юзера.
+ *
+ * Срабатывает только после коммита: если транзакция создаётся внутри
+ * DB::transaction, запросы к VPN-серверу не держат базу и не уходят
+ * при откате.
+ */
+class TransactionObserver implements ShouldHandleEventsAfterCommit
 {
-    /**
-     * Handle the Transaction "created" event.
-     */
+    public function __construct(private AccessService $access)
+    {
+    }
+
     public function created(Transaction $transaction): void
     {
-        // 🔥 Обрабатываем ТОЛЬКО депозиты
-        // Withdraw обрабатывает cron-команда
+        // Списания создаёт крон, он сам вызывает AccessService
         if ($transaction->type !== 'deposit') {
             return;
         }
 
-        if ($transaction->type === 'deposit' && $adminEmail = env('ADMIN_EMAIL')) {
-            \Illuminate\Support\Facades\Notification::route('mail', $adminEmail)
-                ->notify(new \App\Notifications\NewDeposit($transaction));
+        if ($adminEmail = config('gatekeeper.admin_email')) {
+            try {
+                Notification::route('mail', $adminEmail)->notify(new NewDeposit($transaction));
+            } catch (\Throwable $e) {
+                Log::error('[TransactionObserver] Не удалось отправить письмо NewDeposit', ['error' => $e->getMessage()]);
+            }
         }
 
-        $this->checkBalanceAndManageClients($transaction->user_id);
+        $this->access->sync($transaction->user_id);
     }
 
-    /**
-     * Handle the Transaction "updated" event.
-     */
     public function updated(Transaction $transaction): void
     {
-        // Если изменили is_active или amount — пересчитываем баланс
-        if ($transaction->isDirty('is_active') || $transaction->isDirty('amount')) {
-            $this->checkBalanceAndManageClients($transaction->user_id);
-        }
-    }
-
-    /**
-     * Основная логика проверки баланса и управления клиентами
-     */
-    private function checkBalanceAndManageClients(int $userId): void
-    {
-        $user = \App\Models\User::find($userId);
-
-        if (!$user) {
-            Log::warning("TransactionObserver: User #{$userId} not found");
-            return;
-        }
-
-        // Считаем баланс
-        $balance = $user->balance();
-
-        // Получаем всех клиентов пользователя
-        $allClients = Client::where('user_id', $userId)->get();
-        $activeClients = $allClients->where('is_active', true);
-        $inactiveClients = $allClients->where('is_active', false);
-
-        Log::info("TransactionObserver: User #{$userId} balance check", [
-            'balance' => $balance,
-            'active_clients' => $activeClients->count(),
-            'inactive_clients' => $inactiveClients->count()
-        ]);
-
-        // Если баланс >= 0 → активируем всех неактивных клиентов
-        if ($balance >= 0) {
-            foreach ($inactiveClients as $client) {
-                try {
-                    $vpn = new VpnService($client->server_name);
-                    $vpn->activateClient($client->id);
-
-                    Log::info("Client activated", [
-                        'user_id' => $userId,
-                        'client_id' => $client->id,
-                        'client_name' => $client->name
-                    ]);
-                } catch (\Exception $e) {
-                    Log::error("Failed to activate client", [
-                        'error' => $e->getMessage(),
-                        'client_id' => $client->id
-                    ]);
-                }
-            }
-        }
-
-        // Если баланс < 0 → деактивируем всех активных клиентов
-        else {
-            foreach ($activeClients as $client) {
-                try {
-                    $vpn = new VpnService($client->server_name);
-                    $vpn->deactivateClient($client->id);
-
-                    Log::info("Client deactivated", [
-                        'user_id' => $userId,
-                        'client_id' => $client->id,
-                        'client_name' => $client->name
-                    ]);
-                } catch (\Exception $e) {
-                    Log::error("Failed to deactivate client", [
-                        'error' => $e->getMessage(),
-                        'client_id' => $client->id
-                    ]);
-                }
-            }
+        // wasChanged, а не isDirty: после коммита модель уже сохранена
+        if ($transaction->wasChanged('is_active') || $transaction->wasChanged('amount') || $transaction->wasChanged('type')) {
+            $this->access->sync($transaction->user_id);
         }
     }
 }

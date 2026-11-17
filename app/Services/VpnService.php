@@ -3,14 +3,31 @@
 namespace App\Services;
 
 use App\Models\Client;
-use Illuminate\Support\Facades\Log;
+use App\Notifications\VpnClientCreated;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
+use InvalidArgumentException;
 use RuntimeException;
 
+/**
+ * HTTP-клиент к API StrongSwan-сервера.
+ *
+ * Вне production сетевые вызовы заглушены и только пишутся в лог, поэтому
+ * локальная разработка и тесты не трогают боевой сервер.
+ */
 class VpnService
 {
+    /**
+     * Что допустимо в логине и пароле. Всё это пишется в ipsec.secrets, поэтому
+     * кавычки, пробелы и переводы строк запрещены: через них можно дописать
+     * в файл чужую строку.
+     */
+    public const USERNAME_PATTERN = '/^[A-Za-z0-9_.-]{1,64}$/';
+    public const PASSWORD_PATTERN = '/^[A-Za-z0-9_.@!#%+=-]{4,128}$/';
+
     protected string $baseUrl;
-    protected string $secretKey;
+    protected ?string $secretKey;
     protected string $serverName;
 
     public function __construct(?string $serverName = null)
@@ -19,8 +36,7 @@ class VpnService
     }
 
     /**
-     * Определяет, нужно ли реально выполнять запросы к VPN-серверу.
-     * Только в production-окружении запросы выполняются.
+     * Реально ходить на VPN-сервер только в production.
      */
     protected function shouldExecute(): bool
     {
@@ -38,7 +54,7 @@ class VpnService
 
         $server = $servers[$serverName];
         $this->baseUrl = "{$server['protocol']}://{$server['host']}:{$server['port']}";
-        $this->secretKey = $server['secret_key'];
+        $this->secretKey = $server['secret_key'] ?? null;
     }
 
     public function getCurrentServer(): string
@@ -46,12 +62,24 @@ class VpnService
         return $this->serverName;
     }
 
+    /**
+     * Список логинов на сервере.
+     *
+     * @return string[]
+     */
     public function getUsers(): array
     {
-        return $this->request('get_users', []);
+        if (!$this->shouldExecute()) {
+            return [];
+        }
+
+        return $this->request('get_users', [])['users'] ?? [];
     }
 
-    // Метод для добавления клиента на сервер и в БД
+    /**
+     * Создать канал в БД и на сервере. Если сервер не принял юзера,
+     * запись в БД удаляется, чтобы не было канала, которого нет на сервере.
+     */
     public function createClient(
         string $username,
         string $password,
@@ -59,37 +87,45 @@ class VpnService
         ?string $telegramNickname = null,
         bool $activate = true
     ): Client|false {
-        // Проверяем, существует ли уже клиент с таким именем
-        $exists = Client::where('name', $username)->exists();
+        self::assertValidCredentials($username, $password);
 
-        if ($exists) {
-            return false; // Клиент с таким именем уже существует
+        if (Client::where('name', $username)->exists()) {
+            return false;
         }
 
-        // Создаем клиента в БД
         $client = Client::create([
             'name' => $username,
             'password' => $password,
             'user_id' => $userId,
             'server_name' => $this->serverName,
             'telegram_nickname' => $telegramNickname,
-            'is_active' => $activate
+            'is_active' => $activate,
         ]);
 
-        // Отправка уведомления админу
-        if ($adminEmail = env('ADMIN_EMAIL')) {
-            \Illuminate\Support\Facades\Notification::route('mail', $adminEmail)
-                ->notify(new \App\Notifications\VpnClientCreated($client));
+        if ($activate) {
+            try {
+                $this->addUser($username, $password);
+            } catch (\Throwable $e) {
+                Log::error('[VPN] Сервер не принял нового юзера, откатываем канал', [
+                    'client_id' => $client->id,
+                    'error' => $e->getMessage(),
+                ]);
+                $client->delete();
+                return false;
+            }
         }
 
-        if ($activate) {
-            $this->addUser($username, $password);
+        if ($adminEmail = config('gatekeeper.admin_email')) {
+            try {
+                Notification::route('mail', $adminEmail)->notify(new VpnClientCreated($client));
+            } catch (\Throwable $e) {
+                Log::error('[VPN] Не удалось отправить письмо VpnClientCreated', ['error' => $e->getMessage()]);
+            }
         }
 
         return $client;
     }
 
-    // Метод для активации клиента
     public function activateClient(int $clientId): Client
     {
         $client = Client::findOrFail($clientId);
@@ -98,17 +134,14 @@ class VpnService
             return $client;
         }
 
-        // Добавляем клиента на сервер
         $this->addUser($client->name, $client->password);
 
-        // Обновляем статус в БД
         $client->is_active = true;
         $client->save();
 
         return $client;
     }
 
-    // Метод для деактивации клиента
     public function deactivateClient(int $clientId): Client
     {
         $client = Client::findOrFail($clientId);
@@ -117,114 +150,96 @@ class VpnService
             return $client;
         }
 
-        // Удаляем клиента с сервера
         $this->removeUser($client->name);
 
-        // Обновляем статус в БД
         $client->is_active = false;
         $client->save();
 
         return $client;
     }
 
-    // Метод для удаления клиента
     public function deleteClient(int $clientId): void
     {
         $client = Client::findOrFail($clientId);
 
-        // Если клиент активен, сначала удаляем его с сервера
         if ($client->is_active) {
             $this->removeUser($client->name);
         }
 
-        // Удаляем клиента из БД
         $client->delete();
     }
 
-    // Метод addUser с защитой
     public function addUser(string $username, string $password): void
     {
+        self::assertValidCredentials($username, $password);
+
         if (!$this->shouldExecute()) {
-            Log::info("🔇 DEV mode: пропускаем добавление пользователя на VPN-сервер", [
-                'username' => $username,
-                'server' => $this->serverName
-            ]);
-            return; // Ничего не делаем, просто логируем
-        }
-
-        Log::debug("Adding user to server: {$this->serverName}", [
-            'baseUrl' => $this->baseUrl,
-            'server' => $this->serverName
-        ]);
-
-        $this->request('add_user', [
-            'username' => $username,
-            'password' => $password,
-        ]);
-    }
-
-    // Метод removeUser с защитой
-    public function removeUser(string $username): void
-    {
-        if (!$this->shouldExecute()) {
-            Log::info("🔇 DEV mode: пропускаем удаление пользователя с VPN-сервера", [
-                'username' => $username,
-                'server' => $this->serverName
-            ]);
+            Log::info('[VPN] DEV: пропускаем add_user', ['username' => $username, 'server' => $this->serverName]);
             return;
         }
 
-        $this->request('remove_user', [
-            'username' => $username,
-        ]);
+        $this->request('add_user', ['username' => $username, 'password' => $password]);
     }
 
-    private function request(string $endpoint, array $data): mixed
+    public function removeUser(string $username): void
     {
-        $url = "{$this->baseUrl}/{$endpoint}";
-        $payload = array_merge(['key' => $this->secretKey], $data);
+        self::assertValidUsername($username);
 
-        Log::debug('📤 VPN: Отправка запроса', compact('url', 'payload'));
-
-        try {
-            $response = Http::withHeaders(['Content-Type' => 'application/json'])
-                ->timeout(10)
-                ->post($url, $payload);
-
-            Log::debug('📥 VPN: Получен ответ', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-                'successful' => $response->successful(),
-            ]);
-
-            if (!$response->successful()) {
-                throw new \RuntimeException("HTTP {$response->status()}: " . $response->body());
-            }
-
-            $result = $response->json();
-
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                throw new \RuntimeException('JSON parse error: ' . json_last_error_msg());
-            }
-
-            if (!isset($result['status'])) {
-                throw new \RuntimeException('Invalid response format: no status');
-            }
-
-            if ($result['status'] === 'error') {
-                $msg = $result['message'] ?? 'Unknown error';
-                Log::error('❌ API вернул ошибку', ['message' => $msg]);
-                throw new \RuntimeException($msg);
-            }
-
-            return $result['users'] ?? null;
-        } catch (\Exception $e) {
-            Log::error('💥 Ошибка в VPN-запросе', [
-                'endpoint' => $endpoint,
-                'payload' => $payload,
-                'error' => $e->getMessage(),
-            ]);
-            throw $e;
+        if (!$this->shouldExecute()) {
+            Log::info('[VPN] DEV: пропускаем remove_user', ['username' => $username, 'server' => $this->serverName]);
+            return;
         }
+
+        $this->request('remove_user', ['username' => $username]);
+    }
+
+    public static function assertValidUsername(string $username): void
+    {
+        if (!preg_match(self::USERNAME_PATTERN, $username)) {
+            throw new InvalidArgumentException("Недопустимый логин VPN: '{$username}'");
+        }
+    }
+
+    public static function assertValidCredentials(string $username, string $password): void
+    {
+        self::assertValidUsername($username);
+
+        if (!preg_match(self::PASSWORD_PATTERN, $password)) {
+            throw new InvalidArgumentException("Недопустимый пароль VPN для '{$username}'");
+        }
+    }
+
+    /**
+     * @return array<string, mixed> разобранный JSON-ответ
+     */
+    private function request(string $endpoint, array $data): array
+    {
+        if (blank($this->secretKey)) {
+            throw new RuntimeException('VPN_SECRET_KEY не задан');
+        }
+
+        $url = "{$this->baseUrl}/{$endpoint}";
+        // В лог идут только имя метода и логин, без ключа и пароля
+        $logContext = ['url' => $url, 'username' => $data['username'] ?? null];
+
+        $response = Http::acceptJson()
+            ->withHeaders(['X-Api-Key' => $this->secretKey])
+            ->timeout(10)
+            ->post($url, array_merge(['key' => $this->secretKey], $data));
+
+        $result = $response->json();
+
+        if (!$response->successful() || !is_array($result) || ($result['status'] ?? null) !== 'success') {
+            $message = is_array($result) ? ($result['message'] ?? 'unknown error') : 'invalid response';
+            Log::error('[VPN] Запрос к серверу не удался', $logContext + [
+                'status' => $response->status(),
+                'message' => $message,
+            ]);
+            throw new RuntimeException("VPN API {$endpoint}: HTTP {$response->status()}, {$message}");
+        }
+
+        Log::debug('[VPN] Запрос выполнен', $logContext);
+
+        return $result;
     }
 }

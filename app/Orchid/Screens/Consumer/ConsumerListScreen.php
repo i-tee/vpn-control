@@ -10,6 +10,14 @@ use Orchid\Screen\Actions\Link;
 
 class ConsumerListScreen extends Screen
 {
+
+    /**
+     * Доступ только с правом platform.vpn (выдаётся в Roles или через orchid:admin).
+     */
+    public function permission(): ?iterable
+    {
+        return ['platform.vpn'];
+    }
     public function query(): array
     {
         $users = User::whereHas('roles', fn($q) => $q->where('slug', 'consumer'))

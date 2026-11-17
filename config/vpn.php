@@ -29,10 +29,10 @@ return [
 
     'servers' => [
         'x.xab.su' => [
-            'host' => '5.129.226.167',
-            'port' => 5000,
+            'host' => env('VPN_API_HOST', '127.0.0.1'), // API живёт на том же сервере, что и Laravel
+            'port' => (int) env('VPN_API_PORT', 5000),
             'secret_key' => env('VPN_SECRET_KEY'),
-            'protocol' => 'http',
+            'protocol' => env('VPN_API_PROTOCOL', 'http'),
             'status' => 'active',
             // 'price' не задан — наследует default_price
         ],

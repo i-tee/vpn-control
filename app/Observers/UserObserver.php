@@ -14,7 +14,7 @@ class UserObserver
 
         Log::debug('NOTIKI -- New user created', ['user_id' => $user->id, 'name' => $user->name]);
 
-        if ($adminEmail = env('ADMIN_EMAIL')) {
+        if ($adminEmail = config('gatekeeper.admin_email')) {
 
             Log::debug('NOTIKI -- Notification started for admin email', ['admin_email' => $adminEmail]);
 

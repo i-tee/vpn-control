@@ -61,7 +61,7 @@ class ClientObserver
 
 
         // Отправляем через нужного бота
-        $botId = env('TELEGRAPH_BOT_NOTIFY_ID');
+        $botId = config('gatekeeper.notify_bot_id');
         if (!$botId) {
             Log::error('[ClientObserver] TELEGRAPH_BOT_NOTIFY_ID не задан');
             return;
