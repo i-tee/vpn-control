@@ -1,0 +1,40 @@
+# Прод на одном сервере со StrongSwan. Лежит в /opt/gatekeeper/docker-compose.yml,
+# deploy.sh обновляет его из образа при каждом деплое.
+#
+# network_mode: host — контейнерам не нужен NAT Docker: приложение слушает
+# 80/443 прямо на хосте, VPN-трафик (UDP 500/4500) идёт мимо Docker.
+
+name: gatekeeper
+
+x-app: &app
+  image: gatekeeper:current
+  env_file: .env
+  network_mode: host
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  app:
+    <<: *app
+    volumes:
+      - ./storage:/app/storage
+      - ./caddy/data:/data
+      - ./caddy/config:/config
+      - /var/www/acme:/var/www/acme:ro
+      # Каталог, а не сам сокет: при перезапуске API сокет пересоздаётся
+      - /run/strongswan-api:/run/strongswan-api
+    environment:
+      VPN_API_SOCKET: /run/strongswan-api/api.sock
+
+  scheduler:
+    <<: *app
+    command: ["php", "artisan", "schedule:work"]
+    volumes:
+      - ./storage:/app/storage
+      - /run/strongswan-api:/run/strongswan-api
+    environment:
+      VPN_API_SOCKET: /run/strongswan-api/api.sock

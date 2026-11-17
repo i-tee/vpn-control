@@ -1,0 +1,28 @@
+# Caddy внутри FrankenPHP. Переменные приходят из окружения контейнера (.env).
+{
+	frankenphp
+	email {$ACME_EMAIL}
+	# Админ-API Caddy не нужен, а с network_mode: host он торчал бы на :2019 хоста
+	admin off
+	# Для localhost Caddy пытается установить свой корневой сертификат в систему — не нужно
+	skip_install_trust
+}
+
+# Админка Orchid, вебхук Telegram (/telegraph/<token>/webhook), /help, /up
+{$APP_DOMAIN:localhost} {
+	root * /app/public
+	encode zstd br gzip
+	php_server
+}
+
+# Домен VPN-сервера: только проверка Let's Encrypt для сертификата StrongSwan.
+# certbot кладёт файлы в /var/www/acme (webroot), Caddy их отдаёт по HTTP.
+http://{$VPN_DOMAIN:vpn.invalid} {
+	handle /.well-known/acme-challenge/* {
+		root * /var/www/acme
+		file_server
+	}
+	handle {
+		respond 404
+	}
+}

@@ -1,0 +1,92 @@
+# Тесты на каждый push и PR. Деплой — только из main и только когда сервер готов
+# (переменная репозитория DEPLOY_ENABLED=true).
+#
+# Нужно в Settings → Secrets and variables → Actions:
+#   secrets:   DEPLOY_HOST          IP или домен сервера
+#              DEPLOY_SSH_KEY       приватный ключ пользователя deploy (ed25519)
+#              DEPLOY_KNOWN_HOSTS   вывод: ssh-keyscan -t ed25519 <host>
+#   variables: DEPLOY_ENABLED       true
+
+name: CI / Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: pdo_sqlite, intl, zip, bcmath
+          coverage: none
+
+      - name: Composer cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ hashFiles('composer.lock') }}
+
+      - run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Laravel tests
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan test
+
+      - name: StrongSwan API tests
+        run: python3 -m unittest -v infra/strongswan/api/test_strongswan_api.py
+
+      - name: Shell scripts syntax
+        run: |
+          for f in infra/strongswan/install.sh infra/strongswan/config/*.sh infra/app/*.sh; do
+            bash -n "$f"
+          done
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/app/Dockerfile
+          tags: gatekeeper:${{ github.sha }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: SSH key
+        run: |
+          install -d -m 700 ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      # Образ уходит на сервер через stdin; на сервере ключ привязан к deploy.sh
+      - name: Deploy
+        run: |
+          docker save "gatekeeper:${GITHUB_SHA}" | gzip -1 \
+            | ssh -i ~/.ssh/deploy -o BatchMode=yes -o ServerAliveInterval=30 \
+                "deploy@${{ secrets.DEPLOY_HOST }}" "deploy ${GITHUB_SHA}"

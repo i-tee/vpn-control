@@ -466,6 +466,25 @@ TELEGRAM_PROXY_NO_HOSTS=
 
 ## Деплой
 
+**Новый прод (после переезда):** push в `main` → GitHub Actions
+(`.github/workflows/deploy.yml`) гоняет тесты, собирает образ
+(`infra/app/Dockerfile`, FrankenPHP) и по SSH отдаёт его серверу. На сервере
+`deploy.sh` делает копию SQLite, миграции, перезапуск и проверку `/up`; при
+провале сам откатывается на предыдущую версию. Ключ деплоя может запускать
+только `deploy.sh`. Деплой включается переменной репозитория
+`DEPLOY_ENABLED=true`, пока её нет — CI только тестирует. Подробно, с первым
+запуском и восстановлением базы — `infra/app/README.md`.
+
+```bash
+ssh deploy@<host> status      # что запущено
+ssh deploy@<host> rollback    # вернуть предыдущую версию
+```
+
+Кеши `config/route/view/event` собираются при старте контейнера
+(`infra/app/entrypoint.sh`), чистить руками не нужно.
+
+**Старый прод (Hestia, до переезда):**
+
 ```bash
 cd /path/to/public_html
 git pull
