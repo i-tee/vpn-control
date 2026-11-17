@@ -37,7 +37,11 @@ class PaymentService
         }
 
         try {
+            // 3 попытки на "database is locked" в SQLite; при повторе всё начинается заново
             DB::transaction(function () use ($user, $amount, $providerChargeId, &$result) {
+                $result['referral_bonus'] = 0.0;
+                $result['referrer_id'] = null;
+
                 Transaction::createTransaction(
                     userId: $user->id,
                     type: 'deposit',
@@ -69,7 +73,7 @@ class PaymentService
 
                 $result['referral_bonus'] = $bonus;
                 $result['referrer_id'] = $user->referrer_id;
-            });
+            }, 3);
         } catch (UniqueConstraintViolationException) {
             // Два одинаковых вебхука пришли одновременно, второй упёрся в unique
             Log::warning('[Payment] Параллельный дубль платежа, пропускаем', ['charge_id' => $providerChargeId]);

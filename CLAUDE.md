@@ -10,13 +10,12 @@
 - **Laravel 12** на **PHP 8.3**
 - **Orchid Platform 14** — админка (`/admin`)
 - **defstudio/telegraph 1.60** — обёртка над Telegram Bot API
-- **MySQL** на стороннем хостинге (удалённое подключение)
-- **Apache + PHP-FPM** на прод-сервере (через Hestia CP)
-- **Caddy 2** на VPS вне РФ — reverse-proxy для входящих webhook'ов
-- **Amnezia SOCKS5** на той же VPS — proxy для исходящих к api.telegram.org
+- **SQLite** (WAL) — локальный файл на сервере, `storage/database/database.sqlite`
+- **FrankenPHP** (PHP + встроенный Caddy с авто-HTTPS) в Docker — прод-образ `infra/app/`
+- **StrongSwan IKEv2** на том же сервере, API на unix-сокете — `infra/strongswan/`
 
-`Dockerfile`, `docker-compose.yml`, `nginx/` — только для локальной разработки,
-прод работает без них.
+Корневые `Dockerfile`, `docker-compose.yml`, `nginx/` — только для локальной
+разработки. Прод собирается из `infra/app/Dockerfile`.
 
 **Локальные порты** — отдельный диапазон 1xxxx, чтобы не пересекаться с другими
 локальными проектами (avicenna тоже занимает 8080 и 1025/8025):
@@ -44,31 +43,36 @@ ngrok запускать так: `ngrok http 18080`.
 
 ## Топология сети
 
-⚠️ **Идёт переезд (ноябрь 2026).** Ниже старая схема с продом в РФ. Целевая:
-Laravel в Docker, SQLite и StrongSwan на одном сервере вне РФ, API StrongSwan
-на unix-сокете (`infra/strongswan/`). Прокси и ретранслятор тогда не нужны.
-Раздел перепишется после переезда.
-
-Одна внешняя VPS выполняет **обе** роли: принимает webhook от Telegram (Caddy)
-и служит SOCKS5-прокси для наших исходящих (Amnezia).
+С 17.11.2026 всё живёт на **одном сервере вне РФ** (Timeweb, Амстердам):
 
 ```
-+-------------------+         +--------------------------+         +------------------+
-| Telegram (мир)    | --POST-->  VPS вне РФ              | --HTTPS-->  PROD (РФ)      |
-|                   |           tg.<domain> :443 Caddy   |            <domain>        |
-|                   |           SOCKS5    :PORT Amnezia  |            Apache+PHP-FPM  |
-+-------------------+         +--------------------------+         +------------------+
-                                          ^                                |
-                                          +-- проксирует исходящие <-------+
-                                              (Laravel -> api.telegram.org)
+Telegram ──HTTPS──> gatekeeper.<domain> :443 ─┐
+админка  ──HTTPS──> gatekeeper.<domain> :443 ─┤  контейнер app (FrankenPHP, network_mode: host)
+                                              │    Laravel ── SQLite (./storage/database)
+                       контейнер scheduler ───┤    schedule:work: списание 10:30, сверка 10:45 UTC
+                                              │
+                                              └─ unix-сокет /run/strongswan-api/api.sock
+                                                       │
+VPN-клиенты ──IKEv2 UDP 500/4500──> x.<domain> ── charon (StrongSwan) <── strongswan_api.py
 ```
 
-**Почему так:** прод стоит в РФ и попадает под фильтрацию роутов к
-`api.telegram.org`. Режется в обе стороны — и входящие webhook, и исходящие
-запросы. Внешняя VPS решает обе проблемы сразу.
+- Сервер за границей, поэтому Telegram ходит к боту напрямую, а бот к
+  `api.telegram.org` без прокси. `TELEGRAM_PROXY_ENABLED=false`.
+- Учёт и VPN падают и поднимаются вместе: внешних зависимостей нет.
+- VPN API наружу не торчит вообще, порта 5000 больше нет.
+- Сертификат админки получает Caddy внутри контейнера. Сертификат VPN
+  (`x.<domain>`) продлевает certbot через webroot `/var/www/acme`, который
+  отдаёт тот же Caddy.
+- DNS зоны остаётся у Beget. На сервере к резолверу хостера добавлены
+  публичные (`/etc/systemd/resolved.conf.d/gatekeeper.conf`).
 
-БД, код и админка живут только на проде. Внешняя VPS — чистый сетевой relay,
-никакого кода/данных там нет.
+Как это поднять и обслуживать — `infra/app/README.md` и
+`infra/strongswan/README.md`.
+
+**Старая схема (до 17.11.2026):** прод на Hestia в РФ, база MySQL на Beget,
+вебхук через Caddy-ретранслятор `tg.<domain>` и исходящие через SOCKS5 на
+внешней VPS. Разделы «Внешняя VPS» и «Прокси» ниже описывают её и нужны только
+если прод снова окажется в РФ.
 
 ## Ключевые модели
 
@@ -441,28 +445,29 @@ VPN-сервер (HTTP, не HTTPS) не затрагивается. Допол�
 `TELEGRAPH_BOT_TOKEN` больше не используется: токен бота живёт в таблице
 `telegraph_bots`.
 
+Продовый `.env` лежит в `/opt/gatekeeper/.env` (600, владелец deploy), шаблон —
+`infra/app/env.production.example`. `APP_ENV`, `DB_*`, `LOG_*` и путь к сокету
+VPN заданы в образе и compose, в `.env` их нет. Главное:
+
 ```
-APP_ENV=production         # иначе schedule в console.php не зарегистрируется
-DB_*                       # удалённая MySQL
+APP_KEY, APP_URL, APP_DOMAIN, VPN_DOMAIN, ACME_EMAIL
+CACHE_STORE=file           # кеш в файлах, меньше писателей в SQLite
+SESSION_DRIVER=database
 QUEUE_CONNECTION=sync      # см. раздел про Notifications
-LOG_CHANNEL=stack
-LOG_STACK=daily            # ротация 14 дней (config/logging.php)
-LOG_LEVEL=error            # поднять до warning/debug для отладки
-
-TELEGRAPH_BOT_TOKEN=       # боевой бот (от @BotFather)
-TELEGRAPH_BOT_USERNAME=
-TELEGRAPH_BOT_NOTIFY_ID=   # id записи telegraph_bots в БД, для уведомлений
-TELEGRAPH_PAYMENT_PROVIDER_TOKEN=   # YooKassa
-ADMIN_CHAT_ID=             # telegram_id админа
-ADMIN_EMAIL=               # для DailySummary / ClientsBlocked / NewDeposit
-
-VPN_SECRET_KEY=            # auth к StrongSwan-серверу
-
-TELEGRAM_PROXY_ENABLED=true
-TELEGRAM_PROXY_URL=socks5h://user:pass@host:port
-TELEGRAM_PROXY_FALLBACK_DIRECT=true
-TELEGRAM_PROXY_NO_HOSTS=
+MAIL_*                     # smtp.beget.com:465, smtps
+ADMIN_EMAIL, ADMIN_CHAT_ID
+TELEGRAPH_BOT_NOTIFY_ID=1, TELEGRAPH_BOT_USERNAME
+TELEGRAPH_WEBHOOK_SECRET   # Telegram шлёт его в заголовке, чужие вебхуки отбрасываются
+TELEGRAPH_PAYMENT_PROVIDER_TOKEN
+VPN_SECRET_KEY             # = API_KEY из /etc/strongswan-api.env
+TELEGRAM_PROXY_ENABLED=false
 ```
+
+SQLite настроена в `config/database.php`: `busy_timeout` 10 с, `journal_mode`
+WAL, `synchronous` normal. Транзакции, которые сначала читают, а потом пишут
+(регистрация, оплата, импорт), идут с 3 попытками: SQLite отвечает
+`database is locked` без ожидания, если между чтением и записью в базу успел
+написать другой процесс. Laravel распознаёт эту ошибку и повторяет транзакцию.
 
 ## Деплой
 
@@ -663,6 +668,11 @@ done
   под SQLite; `AccessService` и `PaymentService`; идемпотентные крон и оплата;
   `config/gatekeeper.php` вместо `env()`; права `platform.vpn` в админке,
   удалены демо-экраны Orchid и мёртвый тестовый контроллер; тесты.
+- Переезд 17.11.2026: всё на одном сервере вне РФ. StrongSwan в git с новым
+  API на unix-сокете, Laravel в Docker (FrankenPHP) с SQLite, автодеплой из
+  GitHub Actions с копией базы и автооткатом, 20 юзеров восстановлены из
+  `ipsec.secrets` командой `vpn:import-secrets`, ежедневная сверка
+  `vpn:reconcile`. Прокси и ретранслятор `tg.<domain>` больше не нужны.
 
 ## Тесты
 

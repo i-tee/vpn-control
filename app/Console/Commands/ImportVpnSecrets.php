@@ -119,7 +119,7 @@ class ImportVpnSecrets extends Command
                             ])->save();
                         }
                     }
-                });
+                }, 3); // повтор на "database is locked": приложение в это время тоже пишет в базу
             });
 
             $imported++;

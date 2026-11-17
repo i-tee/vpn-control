@@ -29,10 +29,21 @@ services:
       - /run/strongswan-api:/run/strongswan-api
     environment:
       VPN_API_SOCKET: /run/strongswan-api/api.sock
+    # Встроенная проверка образа FrankenPHP ходит в админ-API Caddy (:2019),
+    # а он у нас выключен. Проверяем сам Laravel.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsk --max-time 5 --resolve \"$${APP_DOMAIN}:443:127.0.0.1\" \"https://$${APP_DOMAIN}/up\" >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   scheduler:
     <<: *app
     command: ["php", "artisan", "schedule:work"]
+    # Веб-сервера в планировщике нет, проверка образа к нему не относится
+    healthcheck:
+      disable: true
     volumes:
       - ./storage:/app/storage
       - /run/strongswan-api:/run/strongswan-api

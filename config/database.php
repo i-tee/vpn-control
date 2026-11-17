@@ -37,9 +37,12 @@ return [
             'database' => env('DB_DATABASE', database_path('database.sqlite')),
             'prefix' => '',
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
-            'busy_timeout' => null,
-            'journal_mode' => null,
-            'synchronous' => null,
+            // В проде в базу пишут одновременно веб (вебхук бота, админка),
+            // планировщик и консольные команды. Без busy_timeout второй писатель
+            // сразу получает "database is locked". WAL — чтение не блокирует запись.
+            'busy_timeout' => (int) env('DB_BUSY_TIMEOUT', 10000),
+            'journal_mode' => env('DB_JOURNAL_MODE', 'wal'),
+            'synchronous' => env('DB_SYNCHRONOUS', 'normal'),
         ],
 
         'mysql' => [

@@ -40,7 +40,8 @@ backup_if_differs() {
 step "Пакеты"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y -q strongswan strongswan-pki libcharon-extra-plugins \
+# --no-upgrade: обновление пакетов strongswan перезапустило бы charon и оборвало все сессии
+apt-get install -y -q --no-upgrade strongswan strongswan-pki libcharon-extra-plugins \
     libcharon-extauth-plugins libstrongswan-standard-plugins \
     certbot python3 iptables curl
 

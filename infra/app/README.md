@@ -91,6 +91,28 @@ chown 33:33 storage/database/database.sqlite
 docker compose start app scheduler
 ```
 
+## Грабли, на которые уже наступили
+
+- **`docker compose exec -T` читает stdin.** Если скрипт передан в
+  `ssh host bash` через stdin, первый же `exec` съест остаток скрипта. Либо
+  копировать скрипт файлом, либо `docker compose exec -T app ... </dev/null`.
+- **Копия базы — только изнутри контейнера.** В режиме WAL читать базу можно
+  лишь с правом записи в `-shm` файл, а он принадлежит www-data. Поэтому
+  `deploy.sh` снимает `.backup` через `docker run -u 0` из нового образа.
+- **Деплой при плохой связи.** Если SSH оборвался во время загрузки образа,
+  образ мог успеть загрузиться. Тогда деплой можно запустить на самом сервере,
+  без повторной заливки и не завися от связи:
+  ```bash
+  TAG=<sha>
+  setsid nohup bash -c "docker save gatekeeper:$TAG | gzip -1 | sudo -u deploy /opt/gatekeeper/bin/deploy.sh deploy $TAG" \
+      > /tmp/deploy-$TAG.log 2>&1 </dev/null &
+  ```
+- **DNS хостера.** 17.11.2026 резолвер Timeweb минут 20 отвечал через раз, и
+  крон не разослал уведомления о балансе. Теперь рядом стоят публичные
+  резолверы (`setup-server.sh`, шаг «Запасные DNS»).
+- **Встроенный healthcheck FrankenPHP** ходит в админ-API Caddy, а он
+  выключен. В compose проверка заменена на `/up`.
+
 ## Откат и миграции
 
 Откат меняет только код. Миграции назад не откатываются: новая колонка

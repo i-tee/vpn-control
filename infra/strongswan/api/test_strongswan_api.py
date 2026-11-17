@@ -27,11 +27,18 @@ al : EAP "333333"
 bob : EAP "222222"
 """
 
+# Формат `ipsec statusall`. bob и carol представились в IKE своим локальным IP,
+# логин виден только в строке EAP; у alice IKE-идентификатор совпадает с логином
+# и строки EAP нет.
 STATUS = """\
-Security Associations (2 up, 0 connecting):
-   ikev2-vpn[30]: ESTABLISHED 22 hours ago, 5.129.226.167[x.xab.su]...185.195.152.36[bob]
+Security Associations (3 up, 0 connecting):
+   ikev2-vpn[30]: ESTABLISHED 22 hours ago, 5.129.226.167[x.xab.su]...185.195.152.36[192.168.1.3]
+   ikev2-vpn[30]: Remote EAP identity: bob
+   ikev2-vpn[30]: IKEv2 SPIs: f75fe8f2362e3a60_i 44515dab76979844_r*, rekeying disabled
    ikev2-vpn{29}:  INSTALLED, TUNNEL, reqid 4, ESP in UDP SPIs: c8091412_i c08b4f3d_o
    ikev2-vpn[31]: ESTABLISHED 5 minutes ago, 5.129.226.167[x.xab.su]...10.0.0.9[alice]
+   ikev2-vpn[32]: ESTABLISHED 1 minute ago, 5.129.226.167[x.xab.su]...10.0.0.7[192.168.1.3]
+   ikev2-vpn[32]: Remote EAP identity: carol
 """
 
 API_KEY = "test-key-0123456789"
@@ -55,7 +62,7 @@ class FakeIpsecMixin:
             f.write(
                 "#!/bin/sh\n"
                 f'echo "$@" >> "{self.calls}"\n'
-                f'if [ "$1" = "status" ]; then cat "{self.status_file}"; fi\n'
+                f'if [ "$1" = "statusall" ]; then cat "{self.status_file}"; fi\n'
             )
         os.chmod(self.ipsec, 0o755)
 
@@ -136,8 +143,19 @@ class SecretsStoreTest(FakeIpsecMixin, unittest.TestCase):
     def test_sessions_parse_identities(self):
         self.assertEqual(
             self.store.sessions(),
-            [{"sa": "ikev2-vpn[30]", "identity": "bob"}, {"sa": "ikev2-vpn[31]", "identity": "alice"}],
+            [
+                {"sa": "ikev2-vpn[30]", "identity": "bob"},
+                {"sa": "ikev2-vpn[31]", "identity": "alice"},
+                {"sa": "ikev2-vpn[32]", "identity": "carol"},
+            ],
         )
+
+    def test_same_ike_id_does_not_confuse_users(self):
+        # bob и carol оба представились как 192.168.1.3 — рвём только сессию по EAP-логину
+        self.store.remove("bob")
+        calls = self.ipsec_calls()
+        self.assertIn("down ikev2-vpn[30]", calls)
+        self.assertNotIn("down ikev2-vpn[32]", calls)
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):

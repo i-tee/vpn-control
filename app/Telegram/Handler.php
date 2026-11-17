@@ -58,11 +58,13 @@ class Handler extends WebhookHandler
 
         // Регистрация + бонус — атомарно, без сетевых вызовов. Если упадёт —
         // откатятся обе записи, на следующем /start всё повторится с нуля.
+        // 3 попытки: SQLite отвечает "database is locked", если транзакция
+        // сначала читала, а пока она читала, в базу успел написать кто-то ещё.
         $user = DB::transaction(function () use ($from, $referrerId) {
             $newUser = $this->registerUser($from, $referrerId);
             $this->createEntryBonus($newUser, $referrerId !== null);
             return $newUser;
-        });
+        }, 3);
 
         // Реально начисленная сумма (по приглашению она выше обычной)
         $grantedBonus = $referrerId ? Pricing::referralInviteeBonus() : Pricing::entryBonus();

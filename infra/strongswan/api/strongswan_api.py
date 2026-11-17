@@ -50,8 +50,13 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 PASSWORD_RE = re.compile(r"^[A-Za-z0-9_.@!#%+=-]{4,128}$")
 
 EAP_LINE_RE = re.compile(r'^\s*(?P<user>[^\s:"]+)\s*:\s*EAP\s+"(?P<password>[^"]*)"\s*$')
-# ikev2-vpn[30]: ESTABLISHED 22 hours ago, 5.129.226.167[x.xab.su]...185.195.152.36[KZazulya]
+# `ipsec statusall`, по две строки на сессию:
+#   ikev2-vpn[30]: ESTABLISHED 22 hours ago, 5.129.226.167[x.xab.su]...185.195.152.36[192.168.1.3]
+#   ikev2-vpn[30]: Remote EAP identity: KZazulya
+# IKE-идентификатор клиент выбирает сам (часто это его локальный IP), логин
+# виден только в строке EAP. Сессию юзера ищем по EAP, IKE — запасной вариант.
 SA_LINE_RE = re.compile(r"^\s*(?P<sa>[\w.-]+\[\d+\]): ESTABLISHED\b.*\.\.\.\S+?\[(?P<identity>[^\]]*)\]\s*$")
+EAP_ID_RE = re.compile(r"^\s*(?P<sa>[\w.-]+\[\d+\]): Remote EAP identity: (?P<identity>\S+)\s*$")
 
 MAX_BODY = 64 * 1024
 
@@ -187,13 +192,16 @@ class SecretsStore:
         self._ipsec("rereadsecrets")
 
     def sessions(self):
-        result = self._ipsec("status", check=False)
-        sessions = []
+        """Live IKE SAs: [{"sa": "ikev2-vpn[30]", "identity": <EAP login or IKE id>}]."""
+        result = self._ipsec("statusall", check=False)
+        order, ike_ids, eap_ids = [], {}, {}
         for line in result.stdout.splitlines():
-            m = SA_LINE_RE.match(line)
-            if m:
-                sessions.append({"sa": m.group("sa"), "identity": m.group("identity")})
-        return sessions
+            if m := SA_LINE_RE.match(line):
+                order.append(m.group("sa"))
+                ike_ids[m.group("sa")] = m.group("identity")
+            elif m := EAP_ID_RE.match(line):
+                eap_ids[m.group("sa")] = m.group("identity")
+        return [{"sa": sa, "identity": eap_ids.get(sa, ike_ids[sa])} for sa in order]
 
     def terminate(self, username):
         terminated = []

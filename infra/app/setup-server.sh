@@ -29,6 +29,19 @@ if ! systemctl is-enabled -q vpn-firewall 2>/dev/null; then
 fi
 
 step "Docker Engine"
+# Настройки демона пишем ДО установки: apt сразу запускает dockerd.
+# ip-forward-no-drop: не ставить политику FORWARD в DROP (Docker 27+).
+# Контейнеры работают в network_mode: host, защищать мосты нечем, а DROP
+# отрезал бы VPN-клиентов. Правила vpn-firewall остаются вторым рубежом.
+mkdir -p /etc/docker
+[ -f /etc/docker/daemon.json ] || cat > /etc/docker/daemon.json <<'JSON'
+{
+  "ip-forward-no-drop": true,
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" }
+}
+JSON
+
 if ! command -v docker >/dev/null; then
     apt-get update -q
     apt-get install -y -q ca-certificates curl gnupg
@@ -41,19 +54,25 @@ if ! command -v docker >/dev/null; then
     apt-get update -q
     apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-compose-plugin
 fi
-mkdir -p /etc/docker
-[ -f /etc/docker/daemon.json ] || cat > /etc/docker/daemon.json <<'JSON'
-{
-  "log-driver": "json-file",
-  "log-opts": { "max-size": "10m", "max-file": "3" }
-}
-JSON
 systemctl enable --now docker
-# Docker только что выставил FORWARD DROP — возвращаем правила VPN поверх
+# Docker пересобрал свои цепочки — ставим правила VPN поверх
 systemctl restart vpn-firewall 2>/dev/null || true
+echo "    политика FORWARD: $(iptables -S FORWARD | head -1)"
 
-step "sqlite3 для копий базы"
+step "sqlite3 для ручной работы с базой"
 apt-get install -y -q sqlite3
+
+step "Запасные DNS"
+# 17.11.2026 резолвер хостера минут 20 отвечал через раз, и крон не смог
+# достучаться до api.telegram.org. Публичные резолверы — рядом с хостерским.
+mkdir -p /etc/systemd/resolved.conf.d
+cat > /etc/systemd/resolved.conf.d/gatekeeper.conf <<'CONF'
+[Resolve]
+DNS=1.1.1.1 8.8.8.8
+FallbackDNS=9.9.9.9 1.0.0.1 8.8.4.4
+CONF
+systemctl restart systemd-resolved
+echo "    $(resolvectl dns 2>/dev/null | tr '\n' ' ')"
 
 step "Пользователь $DEPLOY_USER"
 id "$DEPLOY_USER" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$DEPLOY_USER"

@@ -11,7 +11,7 @@
 #
 # Шаги деплоя: загрузить образ → копия базы → миграции → перезапуск →
 # проверка здоровья → при провале автоматический откат на предыдущую версию.
-set -euo pipefail
+set -Eeuo pipefail
 
 HOME_DIR="${GATEKEEPER_HOME:-/opt/gatekeeper}"
 cd "$HOME_DIR"
@@ -24,6 +24,8 @@ KEEP_BACKUPS=20
 
 log() { echo "[deploy $(date -u +%H:%M:%S)] $*"; }
 die() { log "ERROR: $*"; exit 1; }
+# set -e роняет скрипт молча — пусть хотя бы скажет, где
+trap 'log "ERROR: упала команда на строке $LINENO (код $?)"' ERR
 
 env_value() {
     grep -E "^$1=" .env | tail -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//'
@@ -33,14 +35,21 @@ current_tag() { cat releases/current 2>/dev/null || true; }
 previous_tag() { cat releases/previous 2>/dev/null || true; }
 
 backup_db() {
+    # backup_db <метка> <образ>
     [ -f "$DB" ] || return 0
     mkdir -p backups
-    local file="backups/db-$(date -u +%Y%m%d-%H%M%S)-$1.sqlite"
-    # .backup безопасен при работающем приложении, в отличие от cp
-    sqlite3 "$DB" ".backup '$file'"
-    gzip "$file"
+    local name
+    name="db-$(date -u +%Y%m%d-%H%M%S)-$1.sqlite"
+    # Внутри контейнера и от root: база в режиме WAL, читать её можно только
+    # с правом записи в служебный -shm файл, а он принадлежит www-data (uid 33).
+    # .backup безопасен при работающем приложении, в отличие от cp.
+    docker run --rm -u 0 \
+        -v "$HOME_DIR/storage:/app/storage" -v "$HOME_DIR/backups:/backups" \
+        --entrypoint sh "$2" -c \
+        "sqlite3 /app/storage/database/database.sqlite \".backup '/backups/$name'\" \
+         && gzip '/backups/$name' && chown $(id -u):$(id -g) '/backups/$name.gz'"
     ls -1t backups/db-*.sqlite.gz | tail -n +$((KEEP_BACKUPS + 1)) | xargs -r rm -f
-    log "копия базы: $file.gz"
+    log "копия базы: backups/$name.gz"
 }
 
 healthy() {
@@ -86,7 +95,7 @@ cmd_deploy() {
     docker run --rm --entrypoint cat "gatekeeper:$tag" /app/infra/app/docker-compose.prod.yml > docker-compose.yml.new
     mv docker-compose.yml.new docker-compose.yml
 
-    backup_db "pre-$tag"
+    backup_db "pre-$tag" "gatekeeper:$tag"
 
     log "миграции"
     docker run --rm --env-file .env -v "$HOME_DIR/storage:/app/storage" \
