@@ -1,0 +1,40 @@
+# /etc/ipsec.conf — генерируется install.sh из шаблона, домен: ${VPN_DOMAIN}
+#
+# Отличия от исходного конфига сервера (бэкап 2026-11-17):
+#   * удалён мёртвый conn l2tp-vpn (xl2tpd не установлен, общий PSK не нужен);
+#   * наборы шифров оставлены как были, включая modp1024: на нём работает
+#     встроенный IKEv2-клиент Windows. Ужесточать — отдельным решением.
+
+config setup
+  strictcrlpolicy=yes
+  uniqueids=never
+
+conn ikev2-vpn
+  auto=add
+  compress=no
+  type=tunnel
+  keyexchange=ikev2
+  fragmentation=yes
+  forceencaps=yes
+  rekey=no
+
+  ike=aes256-sha256-modp1024,aes256-sha256-modp1536,aes256-sha256-modp2048,aes256-sha384-modp1024,aes256-sha384-modp1536,aes256-sha384-modp2048,aes256-sha512-modp1024,aes256-sha512-modp1536,aes256-sha512-modp2048,aes256gcm64-sha256-modp1024,aes256gcm64-sha256-modp1536,aes256gcm64-sha256-modp2048,aes256gcm64-sha384-modp1024,aes256gcm64-sha384-modp1536,aes256gcm64-sha384-modp2048,aes256gcm64-sha512-modp1024,aes256gcm64-sha512-modp1536,aes256gcm64-sha512-modp2048,aes256gcm96-sha256-modp1024,aes256gcm96-sha256-modp1536,aes256gcm96-sha256-modp2048,aes256gcm96-sha384-modp1024,aes256gcm96-sha384-modp1536,aes256gcm96-sha384-modp2048,aes256gcm96-sha512-modp1024,aes256gcm96-sha512-modp1536,aes256gcm96-sha512-modp2048,aes256gcm128-sha256-modp1024,aes256gcm128-sha256-modp1536,aes256gcm128-sha256-modp2048,aes256gcm128-sha384-modp1024,aes256gcm128-sha384-modp1536,aes256gcm128-sha384-modp2048,aes256gcm128-sha512-modp1024,aes256gcm128-sha512-modp1536,aes256gcm128-sha512-modp2048,aes256gmac-sha256-modp1024,aes256gmac-sha256-modp1536,aes256gmac-sha256-modp2048,aes256gmac-sha384-modp1024,aes256gmac-sha384-modp1536,aes256gmac-sha384-modp2048,aes256gmac-sha512-modp1024,aes256gmac-sha512-modp1536,aes256gmac-sha512-modp2048
+  esp=aes256-sha256-modp1024,aes256-sha256-modp1536,aes256-sha256-modp2048,aes256-sha384-modp1024,aes256-sha384-modp1536,aes256-sha384-modp2048,aes256-sha512-modp1024,aes256-sha512-modp1536,aes256-sha512-modp2048,aes256gcm64-sha256-modp1024,aes256gcm64-sha256-modp1536,aes256gcm64-sha256-modp2048,aes256gcm64-sha384-modp1024,aes256gcm64-sha384-modp1536,aes256gcm64-sha384-modp2048,aes256gcm64-sha512-modp1024,aes256gcm64-sha512-modp1536,aes256gcm64-sha512-modp2048,aes256gcm96-sha256-modp1024,aes256gcm96-sha256-modp1536,aes256gcm96-sha256-modp2048,aes256gcm96-sha384-modp1024,aes256gcm96-sha384-modp1536,aes256gcm96-sha384-modp2048,aes256gcm96-sha512-modp1024,aes256gcm96-sha512-modp1536,aes256gcm96-sha512-modp2048,aes256gcm128-sha256-modp1024,aes256gcm128-sha256-modp1536,aes256gcm128-sha256-modp2048,aes256gcm128-sha384-modp1024,aes256gcm128-sha384-modp1536,aes256gcm128-sha384-modp2048,aes256gcm128-sha512-modp1024,aes256gcm128-sha512-modp1536,aes256gcm128-sha512-modp2048,aes256gmac-sha256-modp1024,aes256gmac-sha256-modp1536,aes256gmac-sha256-modp2048,aes256gmac-sha384-modp1024,aes256gmac-sha384-modp1536,aes256gmac-sha384-modp2048,aes256gmac-sha512-modp1024,aes256gmac-sha512-modp1536,aes256gmac-sha512-modp2048
+
+  # Сервер предъявляет сертификат Let's Encrypt, клиент проверяет его по
+  # удалённому идентификатору ${VPN_DOMAIN}
+  left=%any
+  leftid=@${VPN_DOMAIN}
+  leftca=/etc/letsencrypt/live/${VPN_DOMAIN}/chain.pem
+  leftcert=/etc/letsencrypt/live/${VPN_DOMAIN}/fullchain.pem
+  leftsendcert=always
+  leftsubnet=0.0.0.0/0
+
+  # Клиенты входят по логину и паролю (EAP-MSCHAPv2) из /etc/ipsec.secrets
+  right=%any
+  rightid=%any
+  rightauth=eap-mschapv2
+  eap_identity=%any
+  rightdns=8.8.8.8,8.8.4.4
+  rightsourceip=10.250.0.0/16
+  rightsendcert=never

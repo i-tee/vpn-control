@@ -1,0 +1,12 @@
+[Unit]
+Description=Firewall rules for StrongSwan VPN clients
+After=network-online.target docker.service netfilter-persistent.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vpn-firewall.sh
+
+[Install]
+WantedBy=multi-user.target

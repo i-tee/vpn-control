@@ -44,6 +44,11 @@ ngrok запускать так: `ngrok http 18080`.
 
 ## Топология сети
 
+⚠️ **Идёт переезд (ноябрь 2026).** Ниже старая схема с продом в РФ. Целевая:
+Laravel в Docker, SQLite и StrongSwan на одном сервере вне РФ, API StrongSwan
+на unix-сокете (`infra/strongswan/`). Прокси и ретранслятор тогда не нужны.
+Раздел перепишется после переезда.
+
 Одна внешняя VPS выполняет **обе** роли: принимает webhook от Telegram (Caddy)
 и служит SOCKS5-прокси для наших исходящих (Amnezia).
 
@@ -158,7 +163,11 @@ unique не даёт зачислить один платёж дважды.
   выборка клиентов юзера. Используется и в админке, и в Handler'е бота.
 - **`App\Services\VpnService`** — HTTP-клиент к StrongSwan-серверу. Принимает
   `server_name` в конструкторе, адрес и ключ из `config/vpn.php`
-  (`VPN_API_HOST`, `VPN_API_PORT`, `VPN_SECRET_KEY`).
+  (`VPN_API_SOCKET` или `VPN_API_HOST`/`VPN_API_PORT`, плюс `VPN_SECRET_KEY`).
+  Если задан `VPN_API_SOCKET`, запросы идут через unix-сокет
+  (`CURLOPT_UNIX_SOCKET_PATH`) — так Laravel в контейнере говорит с API на хосте.
+  Методы: `getUsers()`, `getSessions()`, `addUser()`, `removeUser()` и обёртки
+  над каналами в БД. Сам API описан в `infra/strongswan/README.md`.
   **В не-production окружении сетевые вызовы заглушены** (`shouldExecute()`
   только пишет в лог) — можно безопасно гонять DEV-бот, не плодя пользователей
   на боевом StrongSwan.
@@ -167,9 +176,10 @@ unique не даёт зачислить один платёж дважды.
   дописать туда чужую строку. Ключ уходит и в заголовке `X-Api-Key`, и в теле
   запроса. Ключ и пароль в лог не пишутся. Если сервер не принял нового юзера,
   `createClient()` удаляет запись из БД.
-  ⚠️ `VpnServiceProvider` регистрирует синглтон **без аргумента** (дефолтный
-  сервер). Везде, где нужен конкретный сервер, код делает `new VpnService($name)`
-  в обход контейнера.
+  `VpnServiceProvider` регистрирует обычный bind (не синглтон):
+  `app()->makeWith(VpnService::class, ['serverName' => $name])`. Через контейнер
+  его берёт `vpn:reconcile`, поэтому в тестах сервер подменяется. `AccessService`
+  и экраны админки пока делают `new VpnService($name)` напрямую.
 - **`App\Services\AccessService`** — единственное место, где решается, включён
   ли VPN: `sync($user)` при балансе ≥ 0 активирует все каналы юзера, при < 0
   блокирует. Вызывают крон и `TransactionObserver`. Канал без имени пропускается
@@ -291,10 +301,9 @@ HTTP-запросы к StrongSwan уходят синхронно — при п�
 
 ## Ежедневный cron — списание и сводка
 
-- `routes/console.php`: `Schedule::command('vpn:daily-charge')->dailyAt('10:30')`
-  **только в `production`-окружении**.
-- `App\Console\Commands\ChargeVpnClients` (`vpn:daily-charge`) — единственная
-  проектная artisan-команда. Итерируется по consumer'ам с активными клиентами,
+- `routes/console.php`, **только в `production`-окружении**:
+  `vpn:daily-charge` в 10:30 UTC и `vpn:reconcile --fix` в 10:45 UTC.
+- `App\Console\Commands\ChargeVpnClients` (`vpn:daily-charge`). Итерируется по consumer'ам с активными клиентами,
   считает price из `config/vpn.php`, создаёт `withdraw` с
   `subject_type='vpn_service'`. Дальше вызывает `AccessService::sync()`:
   баланс < 0 → блокирует, ≥ 0 → включает.
@@ -314,6 +323,28 @@ HTTP-запросы к StrongSwan уходят синхронно — при п�
 фактическому суточному расходу юзера, а не по базовой цене. Бот в «💼 Баланс»
 использует ту же пару методов, поэтому цифры в боте и в уведомлениях крона
 совпадают.
+
+### Сверка с VPN-сервером — `vpn:reconcile`
+
+Сравнивает логины на сервере с каналами в базе:
+
+- **missing** — канал активен в базе, но на сервере его нет: юзер платит и не может войти;
+- **leaked** — канал заблокирован в базе, но остался на сервере: VPN бесплатно;
+- **unknown** — логин на сервере, которого в базе нет вовсе.
+
+С `--fix` missing добавляются, leaked удаляются. Unknown только попадают в
+отчёт: это могут быть юзеры, заведённые руками. При любом расхождении админу
+уходит сообщение в Telegram (`App\Support\AdminNotifier`).
+
+### Импорт после потери базы — `vpn:import-secrets`
+
+`php artisan vpn:import-secrets <копия ipsec.secrets> [--balance=N] [--dry-run]`.
+Из каждой EAP-строки создаёт юзера с ролью consumer, его канал и чат Telegraph
+для уведомлений. Пароль из одних цифр считается telegram_id. Сгенерированный
+логин `c_<id>_<rand>` не становится telegram username. Стартовый баланс пишется
+как `entry_bonus`, чтобы `/start` не начислил вступительный бонус ещё раз.
+Обсерверы на время импорта выключены. Повторный запуск пропускает уже
+существующие каналы.
 
 ## Notifications и очередь
 

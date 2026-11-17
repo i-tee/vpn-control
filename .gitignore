@@ -24,3 +24,6 @@ Homestead.json
 update_webhook.php
 Homestead.yaml
 Thumbs.db
+# Python (infra/strongswan)
+__pycache__/
+*.pyc

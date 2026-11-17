@@ -28,6 +28,7 @@ class VpnService
 
     protected string $baseUrl;
     protected ?string $secretKey;
+    protected ?string $socket;
     protected string $serverName;
 
     public function __construct(?string $serverName = null)
@@ -53,8 +54,12 @@ class VpnService
         }
 
         $server = $servers[$serverName];
-        $this->baseUrl = "{$server['protocol']}://{$server['host']}:{$server['port']}";
         $this->secretKey = $server['secret_key'] ?? null;
+        $this->socket = $server['socket'] ?? null;
+        // Через unix-сокет хост в URL не важен, curl ходит в сокет
+        $this->baseUrl = $this->socket
+            ? 'http://localhost'
+            : "{$server['protocol']}://{$server['host']}:{$server['port']}";
     }
 
     public function getCurrentServer(): string
@@ -74,6 +79,18 @@ class VpnService
         }
 
         return $this->request('get_users', [])['users'] ?? [];
+    }
+
+    /**
+     * Активные сессии на сервере: [['sa' => 'ikev2-vpn[30]', 'identity' => 'login'], ...]
+     */
+    public function getSessions(): array
+    {
+        if (!$this->shouldExecute()) {
+            return [];
+        }
+
+        return $this->request('sessions', [])['sessions'] ?? [];
     }
 
     /**
@@ -222,10 +239,15 @@ class VpnService
         // В лог идут только имя метода и логин, без ключа и пароля
         $logContext = ['url' => $url, 'username' => $data['username'] ?? null];
 
-        $response = Http::acceptJson()
+        $http = Http::acceptJson()
             ->withHeaders(['X-Api-Key' => $this->secretKey])
-            ->timeout(10)
-            ->post($url, array_merge(['key' => $this->secretKey], $data));
+            ->timeout(10);
+
+        if ($this->socket) {
+            $http = $http->withOptions(['curl' => [CURLOPT_UNIX_SOCKET_PATH => $this->socket]]);
+        }
+
+        $response = $http->post($url, array_merge(['key' => $this->secretKey], $data));
 
         $result = $response->json();
 

@@ -1,14 +1,13 @@
 <?php
 
-use Illuminate\Foundation\Inspiring;
-use Illuminate\Support\Facades\Artisan;
-
-Artisan::command('inspire', function () {
-    $this->comment(Inspiring::quote());
-})->purpose('Display an inspiring quote');
-
 use Illuminate\Support\Facades\Schedule;
 
+// Расписание только в production: на DEV крон не нужен, VPN-вызовы там заглушены
 if (app()->environment('production')) {
-    Schedule::command('vpn:daily-charge')->dailyAt('10:30'); // +3h (MSK)
+    // 10:30 UTC = 13:30 МСК
+    Schedule::command('vpn:daily-charge')->dailyAt('10:30')->withoutOverlapping();
+
+    // Через 15 минут после списания: всё ли на сервере совпадает с базой.
+    // Чинит активных без доступа и заблокированных с доступом, остальное — в отчёт админу.
+    Schedule::command('vpn:reconcile --fix')->dailyAt('10:45')->withoutOverlapping();
 }

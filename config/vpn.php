@@ -33,6 +33,8 @@ return [
             'port' => (int) env('VPN_API_PORT', 5000),
             'secret_key' => env('VPN_SECRET_KEY'),
             'protocol' => env('VPN_API_PROTOCOL', 'http'),
+            // Если задан — запросы идут через unix-сокет, host/port игнорируются
+            'socket' => env('VPN_API_SOCKET'),
             'status' => 'active',
             // 'price' не задан — наследует default_price
         ],
