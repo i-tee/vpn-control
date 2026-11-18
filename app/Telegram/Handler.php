@@ -29,9 +29,15 @@ class Handler extends WebhookHandler
             return;
         }
 
-        $user = User::where('telegram_id', $from->id())->first();
+        $user = User::where('telegram_id', $from->id())->first()
+            ?? $this->relinkImportedUser($from);
 
         if ($user) {
+            // Бот видел этого юзера своими глазами — telegram_id подтверждён
+            if (!$user->telegram_verified_at) {
+                $user->forceFill(['telegram_verified_at' => now()])->save();
+            }
+
             // Идемпотентность: если бонус когда-то не успел начислиться (например,
             // первый /start упал на send() и Telegram ретраил webhook) — догоняем.
             $this->ensureEntryBonus($user);
@@ -79,6 +85,49 @@ class Handler extends WebhookHandler
         if ($referrerId) {
             $this->safeSend(fn() => $this->notifyReferrerAboutNewUser($referrerId, $user), 'start:notifyReferrer');
         }
+    }
+
+    /**
+     * Импортированный юзер с неверным telegram_id.
+     *
+     * После потери базы юзеров восстановили из ipsec.secrets, считая пароль
+     * канала его telegram_id. У части каналов пароль был другим (например,
+     * номер телефона), и такой человек при /start получил бы второй аккаунт,
+     * а его канал и баланс остались бы на первом. Находим его по username и
+     * привязываем настоящий id.
+     *
+     * Только для неподтверждённых (telegram_verified_at пуст): аккаунт, который
+     * бот уже видел, не перехватить, даже если его username потом занял другой.
+     */
+    private function relinkImportedUser(\DefStudio\Telegraph\DTO\User $from): ?User
+    {
+        $username = $from->username();
+        if (!$username) {
+            return null;
+        }
+
+        $user = User::where('telegram_username', $username)
+            ->whereNull('telegram_verified_at')
+            ->first();
+        if (!$user) {
+            return null;
+        }
+
+        $oldId = $user->telegram_id;
+
+        $user->linkTelegramId($from->id(), $this->bot->id);
+        $user->forceFill([
+            'telegram_first_name' => $from->firstName(),
+            'telegram_last_name' => $from->lastName() ?: null,
+        ])->save();
+
+        Log::warning('[Register] Импортированный юзер привязан к настоящему telegram_id', [
+            'user_id' => $user->id,
+            'username' => $username,
+            'had_telegram_id' => $oldId !== null,
+        ]);
+
+        return $user;
     }
 
     /**
@@ -187,6 +236,7 @@ class Handler extends WebhookHandler
             'email'               => ($username ?: 'tg_' . $from->id()) . "@$server",
             'password'            => bcrypt((string)$from->id()),
             'referrer_id'         => $referrerId,
+            'telegram_verified_at' => now(),
         ]);
 
         $user->roles()->attach(User::consumerRole()->id);

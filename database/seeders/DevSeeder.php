@@ -41,6 +41,16 @@ class DevSeeder extends Seeder
         );
         $admin->forceFill(['permissions' => Dashboard::getAllowAllPermission()])->save();
         $this->command?->info('Админ: admin@gatekeeper.local / password');
+
+        // Менеджер — роль из миграции: клиенты, покупатели, транзакции, без управления админами
+        $manager = User::firstOrCreate(
+            ['email' => 'manager@gatekeeper.local'],
+            ['name' => 'manager', 'password' => bcrypt('password')]
+        );
+        if ($role = Role::where('slug', 'manager')->first()) {
+            $manager->roles()->syncWithoutDetaching([$role->id]);
+        }
+        $this->command?->info('Менеджер: manager@gatekeeper.local / password');
     }
 
     /**

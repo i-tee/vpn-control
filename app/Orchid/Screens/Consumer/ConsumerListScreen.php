@@ -70,6 +70,15 @@ class ConsumerListScreen extends Screen
                     ->sort()
                     ->filter(),
 
+                // «старая БД» — восстановлен импортом из ipsec.secrets и ещё ни разу
+                // не нажимал /start: его telegram_id не подтверждён и может быть неверным
+                TD::make('telegram_verified_at', 'Telegram')
+                    ->sort()
+                    ->render(fn(User $user) => $user->telegram_verified_at
+                        ? "<span class='text-success' title='Бот видел юзера " . $user->telegram_verified_at->format('d.m.Y') . "'>✓ бот</span>"
+                        : "<span class='badge bg-warning text-dark' title='Импортирован после потери базы, /start ещё не нажимал. telegram_id может быть неверным.'>старая БД</span>"
+                    ),
+
                 TD::make('vpn_clients_count', 'VPN Clients')
                     ->sort(),
 

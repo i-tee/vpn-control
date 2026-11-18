@@ -129,6 +129,19 @@ class ConsumerEditScreen extends Screen
                 Password::make('user.password')
                     ->title('New Password')
                     ->placeholder('Leave empty to keep current password'),
+
+                Input::make('user.telegram_id')
+                    ->title('Telegram ID')
+                    ->type('number')
+                    ->value($this->user->telegram_id)
+                    ->help($this->user->telegram_verified_at
+                        ? 'Подтверждён ' . $this->user->telegram_verified_at->format('d.m.Y H:i')
+                        : 'Не подтверждён ботом. Узнать настоящий id: человек пишет боту @userinfobot. '
+                            . 'Без верного id бот не сможет присылать уведомления.'),
+
+                Input::make('user.telegram_username')
+                    ->title('Telegram username (без @)')
+                    ->value($this->user->telegram_username),
             ])->title('Main Information'),
 
             // Clients table
@@ -299,16 +312,25 @@ class ConsumerEditScreen extends Screen
             'user.name'  => 'required|string|max:255',
             'user.email' => 'required|email|unique:users,email,' . $id,
             'user.password' => 'nullable|string|min:6',
+            'user.telegram_id' => 'nullable|integer|min:1|unique:users,telegram_id,' . $id,
+            'user.telegram_username' => ['nullable', 'regex:/^[A-Za-z0-9_]{3,32}$/', 'unique:users,telegram_username,' . $id],
         ])['user'];
 
         $this->user->name = $data['name'];
         $this->user->email = $data['email'];
+        $this->user->telegram_username = $data['telegram_username'] ?? null;
 
         if (!empty($data['password'])) {
             $this->user->password = bcrypt($data['password']);
         }
 
         $this->user->save();
+
+        // Админ вписал настоящий telegram_id — привязываем и создаём чат для уведомлений
+        $newTelegramId = isset($data['telegram_id']) ? (int) $data['telegram_id'] : null;
+        if ($newTelegramId && $newTelegramId !== (int) $this->user->telegram_id) {
+            $this->user->linkTelegramId($newTelegramId, (int) config('gatekeeper.notify_bot_id') ?: null);
+        }
 
         $consumerRole = Role::where('slug', 'consumer')->first();
         if ($consumerRole && !$this->user->roles->contains($consumerRole)) {

@@ -4,7 +4,9 @@ namespace App\Models;
 
 use App\Services\BinderService;
 use App\Services\VpnService;
+use DefStudio\Telegraph\Models\TelegraphChat;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Orchid\Filters\Types\Like;
 use Orchid\Filters\Types\Where;
@@ -30,6 +32,7 @@ class User extends Authenticatable
         'telegram_first_name',
         'telegram_last_name',
         'telegram_username',
+        'telegram_verified_at',
         'referrer_id',
     ];
 
@@ -52,6 +55,7 @@ class User extends Authenticatable
     protected $casts = [
         'permissions'          => 'array',
         'email_verified_at'    => 'datetime',
+        'telegram_verified_at' => 'datetime',
     ];
 
     /**
@@ -80,6 +84,7 @@ class User extends Authenticatable
         'created_at',
         'vpn_clients_count',
         'balance',
+        'telegram_verified_at',
     ];
 
     /**
@@ -100,6 +105,36 @@ class User extends Authenticatable
     public function scopeConsumers(Builder $query): Builder
     {
         return $query->whereHas('roles', fn($q) => $q->where('slug', self::ROLE_CONSUMER));
+    }
+
+    /**
+     * Привязать настоящий telegram_id и пометить его подтверждённым.
+     *
+     * Чат со старым id удаляется (Telegram о нём не знает), чат с новым
+     * создаётся, если его нет: без него крон не сможет писать юзеру.
+     * Используют бот (привязка импортированных по username при /start) и
+     * карточка покупателя в админке.
+     */
+    public function linkTelegramId(int $telegramId, ?int $botId): void
+    {
+        $oldId = $this->telegram_id;
+
+        DB::transaction(function () use ($telegramId, $botId, $oldId) {
+            if ($botId && $oldId && (string) $oldId !== (string) $telegramId) {
+                TelegraphChat::where('chat_id', (string) $oldId)->where('telegraph_bot_id', $botId)->delete();
+            }
+
+            $this->forceFill(['telegram_id' => $telegramId, 'telegram_verified_at' => now()])->save();
+
+            if ($botId && !TelegraphChat::where('chat_id', (string) $telegramId)->where('telegraph_bot_id', $botId)->exists()) {
+                // telegraph_bot_id не fillable в модели пакета
+                (new TelegraphChat())->forceFill([
+                    'chat_id' => (string) $telegramId,
+                    'telegraph_bot_id' => $botId,
+                    'name' => '[private] ' . ($this->telegram_username ?: $this->name),
+                ])->save();
+            }
+        }, 3);
     }
 
     public function referrals()
