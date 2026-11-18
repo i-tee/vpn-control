@@ -32,7 +32,7 @@ class PaymentService
         $result = ['status' => self::RESULT_DUPLICATE, 'amount' => $amount, 'referral_bonus' => 0.0, 'referrer_id' => null];
 
         if (Transaction::where('external_id', $this->externalId($providerChargeId))->exists()) {
-            Log::warning('[Payment] Повторное уведомление о платеже, пропускаем', ['charge_id' => $providerChargeId]);
+            Log::channel('payments')->warning('[Payment] Повторное уведомление о платеже, пропускаем', ['charge_id' => $providerChargeId]);
             return $result;
         }
 
@@ -76,11 +76,11 @@ class PaymentService
             }, 3);
         } catch (UniqueConstraintViolationException) {
             // Два одинаковых вебхука пришли одновременно, второй упёрся в unique
-            Log::warning('[Payment] Параллельный дубль платежа, пропускаем', ['charge_id' => $providerChargeId]);
+            Log::channel('payments')->warning('[Payment] Параллельный дубль платежа, пропускаем', ['charge_id' => $providerChargeId]);
             return ['status' => self::RESULT_DUPLICATE, 'amount' => $amount, 'referral_bonus' => 0.0, 'referrer_id' => null];
         }
 
-        Log::info('[Payment] Платёж зачислен', [
+        Log::channel('payments')->info('[Payment] Платёж зачислен', [
             'user_id' => $user->id,
             'amount' => $amount,
             'charge_id' => $providerChargeId,

@@ -52,6 +52,24 @@ return [
 
     'channels' => [
 
+        // Платежи: всё, включая info, в отдельный файл storage/logs/payments-*.log
+        // на 90 дней, независимо от LOG_LEVEL. Плюс в общий лог по его уровню
+        // (ошибки оплаты видны и там). Иначе на проде с LOG_LEVEL=warning
+        // жалобу «не могу оплатить» нечем проверить.
+        'payments' => [
+            'driver' => 'stack',
+            'channels' => ['payments_daily', 'stack'],
+            'ignore_exceptions' => false,
+        ],
+
+        'payments_daily' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/payments.log'),
+            'level' => 'info',
+            'days' => 90,
+            'replace_placeholders' => true,
+        ],
+
         'stack' => [
             'driver' => 'stack',
             'channels' => explode(',', (string) env('LOG_STACK', 'single')),

@@ -109,9 +109,10 @@ class User extends Authenticatable
 
     /**
      * Если баланс уже подтянут подзапросом scopeWithBalance, берём его,
-     * иначе считаем отдельным запросом.
+     * иначе считаем отдельным запросом. $value необязателен: старый код
+     * вызывал аксессор напрямую без аргументов.
      */
-    public function getBalanceAttribute($value): float
+    public function getBalanceAttribute($value = null): float
     {
         return $value !== null ? round((float) $value, 2) : Transaction::balanceFor($this->id);
     }

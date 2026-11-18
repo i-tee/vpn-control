@@ -550,7 +550,7 @@ class Handler extends WebhookHandler
      */
     public function addbalance(): void
     {
-        Log::info('[YKASSA] Вызов addbalance', ['chat_id' => $this->chat->chat_id]);
+        Log::channel('payments')->info('[YKASSA] Вызов addbalance', ['chat_id' => $this->chat->chat_id]);
 
         $this->chat->message("💳 Выберите сумму пополнения:")
             ->keyboard(
@@ -579,7 +579,7 @@ class Handler extends WebhookHandler
         $chatId = $this->chat->chat_id;
         $userId = $this->user_id(); // ваш вспомогательный метод
 
-        Log::info('[YKASSA] sendInvoice вызван', [
+        Log::channel('payments')->info('[YKASSA] sendInvoice вызван', [
             'user_id' => $userId,
             'chat_id' => $chatId,
             'amount' => $amount
@@ -587,7 +587,7 @@ class Handler extends WebhookHandler
 
         $user = User::find($userId);
         if (!$user) {
-            Log::error('[YKASSA] Пользователь не найден', ['user_id' => $userId]);
+            Log::channel('payments')->error('[YKASSA] Пользователь не найден', ['user_id' => $userId]);
             $this->reply('Ошибка: пользователь не найден.');
             return;
         }
@@ -611,21 +611,21 @@ class Handler extends WebhookHandler
                 ->withData('provider_token', $providerToken)
                 ->send();
 
-            Log::info('[YKASSA] Ответ Telegram на sendInvoice', [
+            Log::channel('payments')->info('[YKASSA] Ответ Telegram на sendInvoice', [
                 'response' => $response->json(),
                 'status' => $response->status()
             ]);
 
             if ($response->json('ok') === true) {
-                Log::info('[YKASSA] Инвойс успешно отправлен', ['message_id' => $response->json('result.message_id')]);
+                Log::channel('payments')->info('[YKASSA] Инвойс успешно отправлен', ['message_id' => $response->json('result.message_id')]);
             } else {
-                Log::error('[YKASSA] Ошибка отправки инвойса', [
+                Log::channel('payments')->error('[YKASSA] Ошибка отправки инвойса', [
                     'error_code' => $response->json('error_code'),
                     'description' => $response->json('description')
                 ]);
             }
         } catch (\Exception $e) {
-            Log::error('[YKASSA] Исключение при отправке инвойса', [
+            Log::channel('payments')->error('[YKASSA] Исключение при отправке инвойса', [
                 'error' => $e->getMessage()
             ]);
         }
@@ -641,7 +641,7 @@ class Handler extends WebhookHandler
         $userExists = is_array($payload) && isset($payload['user_id']) && User::whereKey($payload['user_id'])->exists();
         $ok = $userExists && $preCheckoutQuery->currency() === 'RUB';
 
-        Log::info('[YKASSA] PreCheckoutQuery', [
+        Log::channel('payments')->info('[YKASSA] PreCheckoutQuery', [
             'id' => $preCheckoutQuery->id(),
             'user_id' => $payload['user_id'] ?? null,
             'ok' => $ok,
@@ -667,7 +667,7 @@ class Handler extends WebhookHandler
         $user = (is_array($data) && isset($data['user_id'])) ? User::find($data['user_id']) : null;
         $user ??= User::where('telegram_id', $this->chat->chat_id)->first();
 
-        Log::info('[YKASSA] SuccessfulPayment получен', [
+        Log::channel('payments')->info('[YKASSA] SuccessfulPayment получен', [
             'user_id' => $user?->id,
             'total_amount' => $successfulPayment->totalAmount(),
             'currency' => $successfulPayment->currency(),
@@ -675,7 +675,7 @@ class Handler extends WebhookHandler
         ]);
 
         if (!$user) {
-            Log::error('[YKASSA] Не найден юзер для зачисления', ['payload' => $data, 'chat_id' => $this->chat->chat_id]);
+            Log::channel('payments')->error('[YKASSA] Не найден юзер для зачисления', ['payload' => $data, 'chat_id' => $this->chat->chat_id]);
             $this->safeSend(fn() => $this->reply("⚠️ Платёж прошёл, но мы не нашли ваш аккаунт. Напишите в поддержку, ID: {$providerChargeId}"), 'payment:noUser');
             return;
         }
@@ -683,7 +683,7 @@ class Handler extends WebhookHandler
         try {
             $result = app(PaymentService::class)->credit($user, $successfulPayment->totalAmount(), $providerChargeId);
         } catch (\Throwable $e) {
-            Log::error('[YKASSA] Ошибка при зачислении', [
+            Log::channel('payments')->error('[YKASSA] Ошибка при зачислении', [
                 'error' => $e->getMessage(),
                 'user_id' => $user->id,
                 'provider_charge_id' => $providerChargeId,
