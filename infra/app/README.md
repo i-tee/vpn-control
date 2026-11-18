@@ -86,6 +86,8 @@ tail -f storage/logs/laravel-$(date +%F).log
 ```bash
 cd /opt/gatekeeper
 docker compose stop app scheduler
+# база в режиме WAL: старые -wal/-shm от прошлой базы нельзя оставлять рядом с копией
+rm -f storage/database/database.sqlite-wal storage/database/database.sqlite-shm
 gunzip -c backups/db-<дата>-pre-<sha>.sqlite.gz > storage/database/database.sqlite
 chown 33:33 storage/database/database.sqlite
 docker compose start app scheduler

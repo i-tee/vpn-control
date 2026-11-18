@@ -325,13 +325,14 @@ YooKassa-инвойсы через Telegram. `handlePreCheckoutQuery` прове
 - **«Заработано на друзьях»** = сумма активных (`is_active=true`) транзакций пользователя с `subject_type IN ('referral_bonus','referral_activation')`. Отменённые через админку выплаты в сумму не входят.
 - **Идемпотентность выплаты за активацию не смотрит на `is_active`**: если админ отменил транзакцию `referral_activation`, повторно её не выдаст, запись с этим `subject_id` уже есть.
 - **Выплата не зависит от знака баланса друга**: `grantReferralActivationBonus` вызывается сразу после списания, до проверки `balanceAfter < 0`.
-- Транзакция `referral_activation` создаётся **внутри цикла крона** как `deposit` и триггерит `TransactionObserver`: письмо `NewDeposit` админу и `checkBalanceAndManageClients()` для приглашающего. Если после этого баланс приглашающего стал ≥ 0, его заблокированные каналы **активируются**. Это ожидаемо, но в логах выглядит как внезапная активация.
+- Транзакция `referral_activation` создаётся **внутри цикла крона** как `deposit` и триггерит `TransactionObserver`: письмо `NewDeposit` админу и `AccessService::sync()` для приглашающего. Если после этого баланс приглашающего стал ≥ 0, его заблокированные каналы **активируются**. Это ожидаемо, но в логах выглядит как внезапная активация.
 
 ## ⚠️ Observers — скрытый слой автоматики
 
 Регистрируются в `AppServiceProvider::boot()`. **Это самая неочевидная часть
-системы** — они дублируют логику крона и делают синхронные HTTP-вызовы к
-StrongSwan прямо из жизненного цикла моделей.
+системы** — они шлют письма и сообщения и делают синхронные запросы к VPN API
+прямо из жизненного цикла моделей. Само решение «включить или заблокировать»
+общее с кроном — `AccessService`.
 
 **`UserObserver`** — на `created` шлёт `NewUserRegistered` на ADMIN_EMAIL.
 
@@ -503,7 +504,8 @@ VPN-сервер (HTTP, не HTTPS) не затрагивается. Допол�
 - **proxy enabled, fallback off** → все 5 через прокси
 - **proxy enabled, fallback on** → попытки 1-3 через прокси, 4-5 direct
 
-Используется только в `ChargeVpnClients`. В `Handler` ретраев нет — там
+Используется в `ChargeVpnClients` и `AdminNotifier` (сообщения админу, в том
+числе отчёт `vpn:reconcile`). В `Handler` ретраев нет — там
 `safeSend` без retry, потому что webhook нельзя долго удерживать.
 
 ## ENV переменные
@@ -511,8 +513,9 @@ VPN-сервер (HTTP, не HTTPS) не затрагивается. Допол�
 Боевой `.env` в `.gitignore`. Полный список с комментариями — в `.env.example`.
 Проектные переменные читаются только в `config/gatekeeper.php`, `config/vpn.php`,
 `config/telegram.php` и `config/telegraph.php`; в коде везде `config()`.
-`TELEGRAPH_BOT_TOKEN` больше не используется: токен бота живёт в таблице
-`telegraph_bots`.
+Токен бота живёт в таблице `telegraph_bots`. `TELEGRAPH_BOT_TOKEN` читается
+только локально: `DevSeeder` регистрирует по нему DEV-бота
+(`config('gatekeeper.dev_bot_token')`); на проде его нет.
 
 Продовый `.env` лежит в `/opt/gatekeeper/.env` (600, владелец deploy), шаблон —
 `infra/app/env.production.example`. `APP_ENV`, `DB_*`, `LOG_*` и путь к сокету
@@ -662,7 +665,7 @@ done
 ## Тонкости которые легко забыть
 
 - **`schedule:run` только в production.** На DEV cron не зарегистрирован.
-  Для отладки руками: `php artisan vpn:daily-charge --force-notify`.
+  Для отладки руками: `docker compose exec app php artisan vpn:daily-charge --force-notify`.
 - **`subject_type='entry_bonus'`** — единственный надёжный маркер вступительного
   бонуса. Сравнение по `comment` ненадёжно (комменты на русском, с опечатками).
 - **Скрытый «двойной бонус»:** consumer'ы, которым админ начислил Entry Bonus
@@ -759,6 +762,12 @@ done
   GitHub Actions с копией базы и автооткатом, 20 юзеров восстановлены из
   `ipsec.secrets` командой `vpn:import-secrets`, ежедневная сверка
   `vpn:reconcile`. Прокси и ретранслятор `tg.<domain>` больше не нужны.
+- 17–18.11.2026, после переезда: SQLite в WAL с повтором транзакций на
+  `database is locked`; копия базы перед деплоем изнутри контейнера; запасные
+  DNS на сервере; локальный дев на прод-образе с демо-данными; отдельный лог
+  платежей; исправлено падение письма `NewDeposit`; привязка импортированных
+  юзеров к настоящему telegram_id (по username и вручную в админке), пометка
+  «старая БД»; роль «Менеджер».
 
 ## Тесты
 
@@ -769,8 +778,11 @@ done
 Покрыто: формула баланса и скоуп `withBalance`, ежедневное списание (сумма,
 повторный запуск, `--force`, `--user-ids`, блокировка, бонус за активацию),
 `AccessService` через обсервер, `PaymentService` (дубли, реферальный процент),
-регистрация через вебхук бота (роль, бонусы, занятый username), валидация
-логина и пароля VPN, `vpn:reconcile` (с подменённым сервером), `vpn:import-secrets`.
+регистрация через вебхук бота (роль, бонусы, занятый username), привязка
+импортированных по username и защита подтверждённых аккаунтов от захвата,
+ручная привязка telegram_id в карточке покупателя, все пять писем
+(`NotificationsTest`), валидация логина и пароля VPN, `vpn:reconcile`
+(с подменённым сервером), `vpn:import-secrets`.
 
 API StrongSwan тестируется отдельно, без StrongSwan:
 `python3 -m unittest -v infra/strongswan/api/test_strongswan_api.py`.
@@ -806,7 +818,8 @@ docker compose exec app php artisan tinker --execute='$r = DefStudio\Telegraph\M
 Локально:
 
 ```bash
-php artisan test
-php artisan vpn:daily-charge --force-notify   # вне production VPN-вызовы заглушены
-php artisan config:clear                      # после правки .env
+php artisan test                                                  # можно и в WSL
+docker compose exec app php artisan migrate:fresh --seed          # чистая база с демо-данными
+docker compose exec app php artisan vpn:daily-charge --force-notify   # VPN-вызовы заглушены
+docker compose exec app php artisan optimize:clear                # после правки .env
 ```
