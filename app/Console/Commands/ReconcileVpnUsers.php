@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Client;
+use App\Models\Transaction;
 use App\Services\VpnService;
 use App\Support\AdminNotifier;
 use Illuminate\Console\Command;
@@ -16,7 +17,8 @@ use Illuminate\Support\Facades\Log;
  *   - leaked:   канал заблокирован в базе, но на сервере остался — VPN бесплатно;
  *   - unknown:  логин есть на сервере, а в базе такого канала нет вовсе.
  *
- * С --fix первые два чинятся: missing добавляются, leaked удаляются.
+ * С --fix первые два чинятся: missing добавляются (у должников вместо этого
+ * канал блокируется в базе), leaked удаляются.
  * unknown только показываются: это могут быть юзеры, заведённые руками.
  */
 class ReconcileVpnUsers extends Command
@@ -84,8 +86,20 @@ class ReconcileVpnUsers extends Command
         }
 
         foreach ($result['missing'] as $name) {
+            $client = $clients[$name];
+
+            // Должник: блокировка на сервере прошла, а в базе канал остался активным
+            // (так было 22.11.2026, когда API отвечал по таймауту). Возвращать логин
+            // нельзя — это бесплатный VPN. Доводим блокировку в базе до конца.
+            if (Transaction::balanceFor($client->user_id) < 0) {
+                $client->is_active = false;
+                $client->save();
+                $result['fixed'][] = "⛔{$name}";
+                continue;
+            }
+
             try {
-                $vpn->addUser($name, $clients[$name]->password);
+                $vpn->addUser($name, $client->password);
                 $result['fixed'][] = "+{$name}";
             } catch (\Throwable $e) {
                 $result['errors'][] = "{$name}: {$e->getMessage()}";

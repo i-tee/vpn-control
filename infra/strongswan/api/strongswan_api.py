@@ -29,6 +29,7 @@ Configuration via environment (see strongswan-api.env.example):
   SOCKET_GID    group owner of the unix socket, default 33 (www-data), -1 to keep
   SECRETS_FILE  default /etc/ipsec.secrets
   IPSEC_BIN     default ipsec
+  STROKE_BIN    default /usr/lib/ipsec/stroke (used for non-blocking `down-nb`)
   LOCK_FILE     default /run/lock/strongswan-api.lock
 """
 
@@ -83,10 +84,12 @@ def validate_password(password):
 class SecretsStore:
     """Reads and rewrites EAP lines of ipsec.secrets, leaving every other line intact."""
 
-    def __init__(self, path, ipsec_bin="ipsec", lock_path="/run/lock/strongswan-api.lock"):
+    def __init__(self, path, ipsec_bin="ipsec", lock_path="/run/lock/strongswan-api.lock",
+                 stroke_bin="/usr/lib/ipsec/stroke"):
         self.path = path
         self.ipsec_bin = ipsec_bin
         self.lock_path = lock_path
+        self.stroke_bin = stroke_bin
 
     # --- reading -------------------------------------------------------------
 
@@ -148,7 +151,13 @@ class SecretsStore:
                 self.reload()
 
         # Even if the line was already gone, a session may still be up: drop it.
-        self.terminate(username)
+        # The user is already out of ipsec.secrets at this point, so a failure
+        # here must not turn the whole call into an error: the caller would
+        # think nothing happened and keep the channel active in its database.
+        try:
+            self.terminate(username)
+        except Exception:  # noqa: BLE001
+            log.exception("could not terminate sessions of %s", username)
         return existed
 
     def _write(self, lines):
@@ -204,11 +213,20 @@ class SecretsStore:
         return [{"sa": sa, "identity": eap_ids.get(sa, ike_ids[sa])} for sa in order]
 
     def terminate(self, username):
+        # `stroke down-nb`, not `ipsec down`: the blocking variant waits for the
+        # client to confirm the DELETE. A sleeping phone never answers, charon
+        # retransmits for minutes, and the API call times out (incident
+        # 2026-11-22: debtors were removed from secrets, Laravel timed out, kept
+        # the channel active, and vpn:reconcile added them back every day).
         terminated = []
         for s in self.sessions():
             if s["identity"] == username:
-                self._ipsec("down", s["sa"], check=False)
-                terminated.append(s["sa"])
+                try:
+                    subprocess.run([self.stroke_bin, "down-nb", s["sa"]],
+                                   check=False, capture_output=True, text=True, timeout=5)
+                    terminated.append(s["sa"])
+                except (OSError, subprocess.SubprocessError) as e:
+                    log.warning("down-nb %s failed: %s", s["sa"], e)
         if terminated:
             log.info("terminated sessions of %s: %s", username, ", ".join(terminated))
         return terminated
@@ -249,11 +267,15 @@ def make_handler(store, api_key):
 
         def _send(self, status, payload):
             body = json.dumps(payload).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # the client gave up waiting; the action itself is already done
+                log.warning("client disconnected before the response (%s %s)", status, self.path)
 
         def _read_json(self):
             length = int(self.headers.get("Content-Length") or 0)
@@ -360,6 +382,7 @@ def main():
         os.environ.get("SECRETS_FILE", "/etc/ipsec.secrets"),
         os.environ.get("IPSEC_BIN", "ipsec"),
         os.environ.get("LOCK_FILE", "/run/lock/strongswan-api.lock"),
+        os.environ.get("STROKE_BIN", "/usr/lib/ipsec/stroke"),
     )
     listen = os.environ.get("LISTEN", "unix:/run/strongswan-api/api.sock")
     server = build_server(

@@ -72,6 +72,25 @@ class ReconcileTest extends TestCase
         $this->assertSame(['active_missing', 'in_sync', 'stranger'], $this->server->users);
     }
 
+    public function test_fix_blocks_debtor_in_db_instead_of_restoring_on_server(): void
+    {
+        // 22.11.2026: крон удалил должника с сервера, но запрос оборвался по
+        // таймауту и канал в базе остался активным. Сверка возвращала логин —
+        // бесплатный VPN. Теперь она доводит блокировку в базе.
+        $debtor = $this->makeConsumer();
+        $client = $this->makeClient($debtor, ['name' => 'debtor_half_blocked']);
+        $this->withdraw($debtor, 40);
+        $payer = $this->makeConsumer();
+        $this->makeClient($payer, ['name' => 'payer_missing']);
+        $this->deposit($payer, 100);
+        $this->server->users = [];
+
+        $this->artisan('vpn:reconcile', ['--fix' => true])->assertSuccessful();
+
+        $this->assertFalse($client->fresh()->is_active);
+        $this->assertSame(['payer_missing'], $this->server->users);
+    }
+
     public function test_in_sync_server_reports_nothing(): void
     {
         $user = $this->makeConsumer();

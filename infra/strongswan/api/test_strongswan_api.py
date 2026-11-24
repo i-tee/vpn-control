@@ -13,6 +13,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -66,7 +67,21 @@ class FakeIpsecMixin:
             )
         os.chmod(self.ipsec, 0o755)
 
-        self.store = api.SecretsStore(self.secrets, self.ipsec, os.path.join(self.dir, "lock"))
+        # stroke пишет в тот же журнал вызовов; поведение можно переключить файлом mode
+        self.stroke_mode = os.path.join(self.dir, "stroke_mode")
+        self.stroke = os.path.join(self.dir, "stroke")
+        with open(self.stroke, "w") as f:
+            f.write(
+                "#!/bin/sh\n"
+                f'echo "$@" >> "{self.calls}"\n'
+                f'mode=$(cat "{self.stroke_mode}" 2>/dev/null)\n'
+                '[ "$mode" = hang ] && sleep 30\n'
+                '[ "$mode" = fail ] && exit 1\n'
+                "exit 0\n"
+            )
+        os.chmod(self.stroke, 0o755)
+
+        self.store = api.SecretsStore(self.secrets, self.ipsec, os.path.join(self.dir, "lock"), self.stroke)
 
     def read_secrets(self):
         with open(self.secrets) as f:
@@ -108,11 +123,31 @@ class SecretsStoreTest(FakeIpsecMixin, unittest.TestCase):
         self.assertIn("%any %any : PSK", content)
         self.assertIn("x.xab.su : RSA", content)
 
+    def test_hanging_terminate_does_not_block_removal(self):
+        # 2026-11-22: blocking `ipsec down` hung on a sleeping phone, the API
+        # call timed out, and the caller kept the debtor's channel active
+        with open(self.stroke_mode, "w") as f:
+            f.write("hang")
+        start = time.monotonic()
+        self.assertTrue(self.store.remove("bob"))
+        self.assertLess(time.monotonic() - start, 10)
+        self.assertNotIn("bob : EAP", self.read_secrets())
+
+    def test_failing_terminate_still_removes_user(self):
+        with open(self.stroke_mode, "w") as f:
+            f.write("fail")
+        self.assertTrue(self.store.remove("bob"))
+        self.assertNotIn("bob : EAP", self.read_secrets())
+
+    def test_terminate_uses_non_blocking_stroke(self):
+        self.store.remove("bob")
+        self.assertNotIn("down ikev2-vpn[30]", self.ipsec_calls())
+
     def test_remove_terminates_only_that_users_session(self):
         self.store.remove("bob")
         calls = self.ipsec_calls()
-        self.assertIn("down ikev2-vpn[30]", calls)
-        self.assertNotIn("down ikev2-vpn[31]", calls)
+        self.assertIn("down-nb ikev2-vpn[30]", calls)
+        self.assertNotIn("down-nb ikev2-vpn[31]", calls)
         self.assertNotIn("bob : EAP", self.read_secrets())
 
     def test_remove_absent_user_still_drops_live_session(self):
@@ -120,7 +155,7 @@ class SecretsStoreTest(FakeIpsecMixin, unittest.TestCase):
         with open(self.status_file, "a") as f:
             f.write("   ikev2-vpn[40]: ESTABLISHED 1 second ago, 1.1.1.1[x]...2.2.2.2[ghost]\n")
         self.store.remove("ghost")
-        self.assertIn("down ikev2-vpn[40]", self.ipsec_calls())
+        self.assertIn("down-nb ikev2-vpn[40]", self.ipsec_calls())
 
     def test_write_keeps_mode_and_makes_backup(self):
         self.store.add("carol", "444444")
@@ -154,8 +189,8 @@ class SecretsStoreTest(FakeIpsecMixin, unittest.TestCase):
         # bob и carol оба представились как 192.168.1.3 — рвём только сессию по EAP-логину
         self.store.remove("bob")
         calls = self.ipsec_calls()
-        self.assertIn("down ikev2-vpn[30]", calls)
-        self.assertNotIn("down ikev2-vpn[32]", calls)
+        self.assertIn("down-nb ikev2-vpn[30]", calls)
+        self.assertNotIn("down-nb ikev2-vpn[32]", calls)
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):

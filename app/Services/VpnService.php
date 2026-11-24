@@ -239,9 +239,12 @@ class VpnService
         // В лог идут только имя метода и логин, без ключа и пароля
         $logContext = ['url' => $url, 'username' => $data['username'] ?? null];
 
+        // 30 с с запасом: API на том же сервере и обычно отвечает за доли секунды,
+        // но при обрыве таймаутом канал остаётся активным в базе, а на сервере
+        // логин уже удалён (инцидент 22.11.2026)
         $http = Http::acceptJson()
             ->withHeaders(['X-Api-Key' => $this->secretKey])
-            ->timeout(10);
+            ->timeout(30);
 
         if ($this->socket) {
             $http = $http->withOptions(['curl' => [CURLOPT_UNIX_SOCKET_PATH => $this->socket]]);
